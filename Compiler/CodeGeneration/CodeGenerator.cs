@@ -65,6 +65,7 @@ public class CodeGenerator
     private Dictionary<int, int> _largeParameterMap = new();
 
 
+    private Module _module;
     private ProgramDeclaration _program;
     private SemanticModel _model;
     private string _source;
@@ -73,9 +74,10 @@ public class CodeGenerator
 
 
 
-    public CodeGenerator(ProgramDeclaration program, SemanticModel semanticModel, string source)
+    public CodeGenerator(Module module, SemanticModel semanticModel, string source)
     {
-        _program = program;
+        _module = module;
+        _program = module.Program;
         _model = semanticModel;
         _source = source;
     }
@@ -84,7 +86,9 @@ public class CodeGenerator
     {
         Logger.LogDebug($"Generating machine code {_program.Id}");
 
-        List<string> externalFunction = ["ExitProcess", "GetProcessHeap", "HeapAlloc", .. _model.ExternalFunctions.Select(y => Utils.Utils.SanitizeFqn(_model.GetSymbol<ExternalFunctionSymbol>(y).FullyQualifiedName))];
+        List<string> externalFunction = ["ExitProcess", "GetProcessHeap", "HeapAlloc",
+            .._model.ExternalFunctions[_module.Id]
+                .Select(y => Utils.Utils.SanitizeFqn(_model.GetSymbol<CallableSymbol>(y).FullyQualifiedName))];
         var globals = _model.Symbols.Values.Where(x => x is FunctionSymbol { AccessType: EAccessType.Global } fs && x.OwnerModule.Program.Id == _program.Id).Select(y => Utils.Utils.SanitizeFqn((y as FunctionSymbol).FullyQualifiedName)).ToList();
 
 
@@ -102,18 +106,13 @@ public class CodeGenerator
         _writer.Append("default rel", false);
 
         _writer.Append("section .rdata", false);
-        //for (var i = 0; i < _model.StringConstants.Count; i++)
-        //{
-        //    var lbl = GetStringConstLabel(i);
-        //    _writer.Append($"{lbl}: db \"{_model.StringConstants[i].Text}\"", false);
-        //}
+
         for (var i = 0; i < _model.LiteralConstants.Count; i++)
         {
             _writer.Append(_model.LiteralConstants[i] switch
             {
-                StringConstant s => $"LC{i}:\tdb {s.Text}".PadRight(50) + $"; {s.Text}",
+                StringConstant s => $"LC{i}:\tdb \"{s.Text}\"".PadRight(50) + $"; {s.Text}",
                 FloatConstant f => $"LC{i}:\tdd 0x{BitConverter.SingleToInt32Bits(f.Value):X8}".PadRight(50) + $"; {f.Value}f",
-
                 _ => throw new ArgumentOutOfRangeException()
             }, false);
         }
@@ -125,24 +124,7 @@ public class CodeGenerator
             _writer.Append($"global {string.Join(", ", globals)}");
         _writer.Append("");
 
-
-        //foreach (var c in _program.Classes)
-        //{
-        //    GenerateClass(c);
-        //}
-        //
-        //foreach (var f in _program.Functions)
-        //{
-        //    if (f is ExternFunctionDeclaration)
-        //        continue;
-        //
-        //    _currentFunction = f;
-        //    GenerateFunction(f);
-        //}
-
         GenerateScope(_program.Body);
-
-
 
         return _writer.ToString();
     }
@@ -179,34 +161,6 @@ public class CodeGenerator
             }
         }
     }
-
-    //public void GenerateMethod(ClassMethodDeclaration method)
-    //{
-    //    _rspParity = 0;
-    //    _tempCursor = 0;
-    //    _tempMax = 0;
-    //
-    //    var methodSymbol = _model.MethodSymbols[method.Id];
-    //    var meta = _model.MethodData[methodSymbol.Id];
-    //
-    //    _localsSize = meta.Size;
-    //
-    //    _writer.Label(meta.FullName);
-    //
-    //
-    //    EmitFunctionPrologue(method.Parameters);
-    //    EmitStatement(method.Body);
-    //
-    //    if (method.ReturnType == "void")
-    //    {
-    //        _writer.Append("mov rsp, rbp");
-    //        Pop(new RegisterOperand("rbp", 8));
-    //        _writer.Append("ret");
-    //    }
-    //
-    //
-    //    EmitFunctionEpilogue(meta.Size);
-    //}
 
     public void GenerateFunction(FunctionDeclaration function)
     {
@@ -537,11 +491,20 @@ public class CodeGenerator
         {
             case VariableExpression varExpr:
                 {
-                    var loc = GetVariableExpressionLocation(varExpr);
+                    var loc = GetVariableAsOperand(varExpr);
                     if (IsLargeParameter(varExpr))
-                        _writer.Append($"mov rax, {loc}");
+                        Move(destination, loc);
                     else
-                        _writer.Append($"lea rax, {loc}");
+                    {
+                        if (destination is RegisterOperand)
+                            Lea(destination, loc);
+                        else
+                        {
+                            Lea(RegisterOperand.Rax, loc);
+                            Move(destination, RegisterOperand.Rax);
+                        }
+                    }
+
                     return;
                 }
             case IndexExpression indExpr:
@@ -557,11 +520,11 @@ public class CodeGenerator
                         var fieldSymbol = _model.GetSymbol<FieldSymbol>(memberAccess.Id);
                         if (memberAccess.Base is VariableExpression varExpr)
                         {
-                            var loc = GetVariableExpressionLocation(varExpr, byteOffset: cts.FieldOffset[fieldSymbol.Id]);
+                            var loc = GetVariableAsOperand(varExpr);
                             if (IsLargeParameter(varExpr))
-                                _writer.Append($"mov rax, {loc}");
+                                Move(destination, loc);
                             else
-                                _writer.Append($"lea rax, {loc}");
+                                Lea(destination, loc);
                             return;
                         }
                     }
@@ -641,50 +604,17 @@ public class CodeGenerator
         var callName = Utils.Utils.SanitizeFqn(methSym.FullyQualifiedName);
         var baseType = _model.ExpressionData[memCallExpr.Base.Id].Type;
 
-        var argCount = memCallExpr.Arguments.Count;
-        var memArgStartIndex = 4;
 
         if (baseType is ScopeTypeSymbol)
         {
-
+            EmitFunctionCall(callName, memCallExpr.Arguments.Select(x => (x, false)).ToList());
         }
         else
         {
-            argCount++;
-            memArgStartIndex = 3;
+            Debug.Assert(baseType is ClassTypeSymbol);
+            EmitFunctionCall(callName, [(memCallExpr.Base, true), .. memCallExpr.Arguments.Select(x => (x, false))]);
         }
 
-
-        EmitFunctionCall(callName,
-            argCount,
-            () =>
-            {
-
-
-                for (var i = memArgStartIndex; i < memCallExpr.Arguments.Count; i++)
-                {
-                    EmitExpression(memCallExpr.Arguments[i]);
-                    var argType = _model.ExpressionData[memCallExpr.Arguments[i].Id].Type;
-                    var parType = _model.GetSymbol<ParameterSymbol>(methSym.Parameters[i]).Type;
-                    if (FitsInRegister(argType.Size))
-                    {
-                        //Move($"[rsp+{32 + (i - 4) * 8}]", "rax", parType.Size);
-                        Move(MemoryOperand.FromOffset("rsp", 32 + (i - 4) * 8, parType.Size), RegisterOperand.Rax);
-                    }
-                    else
-                    {
-                        MoveMemory(MemoryOperand.FromOffset("rsp", 32 + (i - 4) * 8, parType.Size), new MemoryOperand("[rax]", parType.Size), RegisterOperand.R11);
-                    }
-                }
-
-
-                //if (memCallExpr.Arguments.Count > 0) { EmitExpression(memCallExpr.Arguments[0]); _writer.Append("mov rcx, rax"); }
-                EmitAddress(memCallExpr.Base, destination); _writer.Append("mov rcx, rax");
-                if (memCallExpr.Arguments.Count > 1) { EmitExpression(memCallExpr.Arguments[1]); _writer.Append("mov rdx, rax"); }
-                if (memCallExpr.Arguments.Count > 2) { EmitExpression(memCallExpr.Arguments[2]); _writer.Append("mov r8, rax"); }
-                if (memCallExpr.Arguments.Count > 3) { EmitExpression(memCallExpr.Arguments[3]); _writer.Append("mov r9, rax"); }
-            }
-        );
 
         if (destination is not RegisterOperand { Name: "rax" })
         {
@@ -692,7 +622,6 @@ public class CodeGenerator
         }
 
         return FitsInRegister(methSym.Type.Size) ? EmitResult.Value(methSym.Type.Size) : EmitResult.Address();
-        return null;
     }
 
     private EmitResult EmitBinary(BinaryExpression binaryExpression, Operand destination)
@@ -720,7 +649,7 @@ public class CodeGenerator
 
 
 
-        Operand left;
+        Operand left = destination;
         Operand right;
         var isFloat = Types.IsFloatType(_model.ExpressionData[binaryExpression.Id].Type);
 
@@ -745,17 +674,19 @@ public class CodeGenerator
 
             Pop(RegisterOperand.Xmm1);
 
-            left = RegisterOperand.Xmm0 with { Size = leftResult.Size };
+            //left = RegisterOperand.Xmm0 with { Size = leftResult.Size };
+            left = left with { Size = leftResult.Size };
             right = RegisterOperand.Xmm1 with { Size = rightResult.Size };
         }
         else
         {
             if (binaryExpression.Right.IsNumericLiteral() && binaryExpression.Operator.Type is not (OperatorType.Div or OperatorType.Mod))
             {
-                var leftResult = EmitExpression(binaryExpression.Left);
+                var leftResult = EmitExpression(binaryExpression.Left, destination);
                 Debug.Assert(leftResult.Type != EmitType.Address);
 
-                left = RegisterOperand.Rax with { Size = leftResult.Size };
+                //left = RegisterOperand.Rax with { Size = leftResult.Size };
+                left = left with { Size = leftResult.Size };
                 right = new ImmediateOperand(binaryExpression.Right.GetNumericalLiteralValue(), 4);
             }
             else
@@ -766,12 +697,13 @@ public class CodeGenerator
                 var leftResult = EmitExpression(binaryExpression.Left);
                 Debug.Assert(leftResult.Type != EmitType.Address);
                 Pop(RegisterOperand.Rcx);
-                left = RegisterOperand.Rax with { Size = leftResult.Size };
+                //left = RegisterOperand.Rax with { Size = leftResult.Size };
+                left = left with { Size = leftResult.Size };
                 right = RegisterOperand.Rcx with { Size = rightResult.Size };
             }
         }
 
-
+        //left = destination with { Size = left.Size };
 
 
 
@@ -798,7 +730,7 @@ public class CodeGenerator
 
             case OperatorType.Mod:
                 Div(left, right);
-                _writer.Append("mov rax, rdx");
+                Move(left, RegisterOperand.Rdx);
                 return EmitResult.Value(maxSize);
 
             case OperatorType.Equal:
@@ -1230,23 +1162,22 @@ public class CodeGenerator
 
             }
         }
-        //else if (baseType == Aliases.String)
-        //{
-        //    if (memberAccess.Member == "length")
-        //    {
-        //        EmitAddress(memberAccess.Base, destination);
-        //        _writer.Append("add rax, 8");
-        //        Move("rax", "[rax]", 4);
-        //        return EmitResult.Value(4);
-        //    }
-        //    if (memberAccess.Member == "data")
-        //    {
-        //        EmitAddress(memberAccess.Base, destination);
-        //        _writer.Append("add rax, 0");
-        //        Move("rax", "[rax]", 8);
-        //        return EmitResult.Value(8);
-        //    }
-        //}
+        else if (baseType == Types.String)
+        {
+            if (memberAccess.Member == "length")
+            {
+                EmitAddress(memberAccess.Base, RegisterOperand.Rax);
+                Add(RegisterOperand.Rax, new ImmediateOperand(8, 8));
+                Move(destination with{Size = 4}, MemoryOperand.FromOffset("rax", 8, 4));
+                return EmitResult.Value(4);
+            }
+            if (memberAccess.Member == "data")
+            {
+                EmitAddress(memberAccess.Base, RegisterOperand.Rax);
+                Move(destination, new MemoryOperand("[rax]", 8));
+                return EmitResult.Value(8);
+            }
+        }
 
         throw new NotSupportedException($"Expression not handled: '{memberAccess.Member}' on '{baseType}'"); ;
     }
@@ -1268,7 +1199,7 @@ public class CodeGenerator
     }
 
 
-    private void EmitFunctionCall(string name, List<Expression> arguments)
+    private void EmitFunctionCall(string name, List<(Expression exp, bool address)> arguments)
     {
         EmitFunctionCall(name,
             arguments.Count,
@@ -1277,15 +1208,15 @@ public class CodeGenerator
 
                 for (var i = 0; i < arguments.Count; i++)
                 {
-                    var argType = _model.ExpressionData[arguments[i].Id].Type;
+                    var argType = _model.ExpressionData[arguments[i].exp.Id].Type;
 
-                    if (FitsInRegister(argType.Size))
+                    if (FitsInRegister(argType.Size) && !arguments[i].address)
                     {
-                        EmitExpression(arguments[i], AssemblyUtils.GetParameterLocation(i, false));
+                        EmitExpression(arguments[i].exp, AssemblyUtils.GetParameterLocation(i, false));
                     }
                     else
                     {
-                        throw new NotImplementedException();
+                        EmitAddress(arguments[i].exp, AssemblyUtils.GetParameterLocation(i, false));
                     }
 
                 }
@@ -1589,7 +1520,15 @@ public class CodeGenerator
         }
         else if (dest.Size < src.Size)
         {
-            _writer.Append($"mov {dest.AsmName}, {src.AsmName}");
+            if (dest is MemoryOperand)
+            {
+                _writer.Append($"mov {dest.AsmName}, {((src as RegisterOperand) with { Size = dest.Size }).AsmName}");
+            }
+            else
+            {
+                _writer.Append($"mov {dest.AsmName}, {src.AsmName}");
+            }
+
         }
         else
         {
@@ -1680,7 +1619,7 @@ public class CodeGenerator
     }
 
 
-    private void Lea(Operand dest, Operand src) => BinaryInstruction("lea", dest, src);
+    private void Lea(Operand dest, Operand src) => BinaryInstruction("lea", dest, src with { Size = 8 });
 
 
     private void Add(Operand dest, Operand src) => IntegerOrFloatBinaryInstruction("add", "addss", "addsd", dest, src);
@@ -1708,7 +1647,10 @@ public class CodeGenerator
             }
             else
             {
-                throw new NotSupportedException();
+                Move(RegisterOperand.Rax, dest);
+                _writer.Append("cqo");
+                _writer.Append($"idiv {src.AsmName}");
+                Move(dest, RegisterOperand.Rax);
             }
         }
     }

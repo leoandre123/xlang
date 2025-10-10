@@ -20,6 +20,7 @@ public enum TokenType
     Class,
     Scope,
     Import,
+    Enum,
 
     //
     InterpolationStart,

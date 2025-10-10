@@ -55,12 +55,12 @@ public static class Compiler
             Logger.LogError(msg);
             success = false;
         }
-
+            
 
         sw.Stop();
 
         Logger.LogInfo($"========== Build {(success ? "finished" : "failed")} at {DateTime.Now:HH:mm} and took {sw.ElapsedMilliseconds} ms ==========");
-        return true;
+        return success;
     }
 
     private static bool RunBuild(string[] files, CompilerSettings settings)
@@ -98,11 +98,11 @@ public static class Compiler
 
         for (var i = 0; i < modules.Count; i++)
         {
-            var prog = modules[i].Program;
-            var optimizer = new AstOptimizer();
-            var optimizedProg = optimizer.Optimize(prog);
+            //var prog = modules[i].Program;
+            //var optimizer = new AstOptimizer();
+            //var optimizedProg = optimizer.Optimize(prog);
 
-            var generator = new CodeGenerator(optimizedProg, model, sources[i]);
+            var generator = new CodeGenerator(modules[i], model, sources[i]);
             var asm = generator.Generate();
 
             var outputPath = Path.ChangeExtension(files[i], "asm");

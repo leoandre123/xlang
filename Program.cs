@@ -60,19 +60,22 @@ rootCommand.SetAction(parseResult =>
     return 0;
 });
 
-return rootCommand.Parse(args).Invoke();
+var exitCode = rootCommand.Parse(args).Invoke();
+
+if (exitCode == 0)
+{
+    Console.WriteLine("Running program:");
+    var proc = Process.Start(new ProcessStartInfo(fileName: "program.exe"));
+
+    proc.OutputDataReceived += (s, e) => { if (e.Data != null) Console.Out.WriteLine(e.Data); };
+    proc.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.Error.WriteLine(e.Data); };
+
+    await proc.WaitForExitAsync();
+
+    Console.WriteLine();
+    Console.WriteLine($"Exit code: {proc.ExitCode}");
+    Console.ReadKey();
+}
 
 
-
-Console.WriteLine("Running program:");
-var proc = Process.Start(new ProcessStartInfo(fileName: "program.exe"));
-
-proc.OutputDataReceived += (s, e) => { if (e.Data != null) Console.Out.WriteLine(e.Data); };
-proc.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.Error.WriteLine(e.Data); };
-
-await proc.WaitForExitAsync();
-
-Console.WriteLine();
-Console.WriteLine($"Exit code: {proc.ExitCode}");
-Console.ReadKey();
-return 0;
+return exitCode;

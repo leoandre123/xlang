@@ -29,9 +29,9 @@ public class SemanticModel
     public List<Diagnostic> Diagnostics { get; } = new();
     public Dictionary<int, ConcatenationList> ConcatenationList { get; } = new();
     public Dictionary<int, ExpressionInfo> ExpressionData { get; } = new();
-    public List<SymbolId> ExternalFunctions { get; } = new();
+    public Dictionary<int, List<SymbolId>> ExternalFunctions { get; } = new();
 
-    public SymbolId? EntryPoint { get; set; } = null; 
+    public SymbolId? EntryPoint { get; set; } = null;
     public ScopeNode ScopeTreeBaseNode { get; set; }
 
     //Symbol table - Maps node ids -> symbols

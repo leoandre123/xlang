@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+﻿using System;
+using System.Diagnostics;
 using System.Xml.Linq;
 using xlang.Compiler.Parsing;
 using xlang.Compiler.Structures;
@@ -138,7 +139,7 @@ public class SemanticAnalyzer
                 Span = scope.Span
             };
             AddSymbol(scopeSymbol, scope.Id);
-            
+
             _currentScopeNode.SetSymbol(scopeSymbol.Id);
         }
 
@@ -320,7 +321,7 @@ public class SemanticAnalyzer
                 Span = function.Span
             };
 
-            _model.ExternalFunctions.Add(funcSym.Id);
+            //_model.ExternalFunctions[_currentModule.Id].Add(funcSym.Id);
         }
         else
         {
@@ -1084,6 +1085,7 @@ public class SemanticAnalyzer
         if (symbol == null)
             throw new SemanticException($"Function with name '{call.Name}' has not been declared.", call.Span, _currentModule.File);
 
+
         UseSymbol(symbol, call.Id);
         RecordRead(symbol.Id);
 
@@ -1219,7 +1221,7 @@ public class SemanticAnalyzer
         if (baseType.Type is ScopeTypeSymbol scopeTypeSymbol)
         {
             callable = LookupCallable($"{scopeTypeSymbol.FullyQualifiedName}.{call.Member}", args) ?? throw new SemanticException($"Cannot find callable '{call.Member}' in '{scopeTypeSymbol.FullyQualifiedName}'.", call.Span, _currentModule.File);
-        } 
+        }
         else if (baseType.Type is ClassTypeSymbol classTypeSymbol)
         {
             var classSymbol = LookupClass(baseType.Type.Name) ?? throw new SemanticException($"'{baseType.Type.Name}' is not a class.", call.Span, _currentModule.File);
@@ -1232,15 +1234,15 @@ public class SemanticAnalyzer
         {
             throw new SemanticException($"'{baseType.Type}' is not a class or scope.", call.Span, _currentModule.File);
         }
-            
 
-        
-        
+
+
+
         if (callable == null)
             throw new SemanticException($"'{baseType.Type}' does not contain a method with the name '{call}'.", call.Span, _currentModule.File);
 
 
-        
+
 
         //if (!AreParametersAssignableFrom(methodSymbol.Parameters, args))
         //{
@@ -1290,6 +1292,14 @@ public class SemanticAnalyzer
     {
         Debug.Assert(_model.Symbols.ContainsKey(symbol.Id));
         _model.NodeToSymbolId[usingNodeId] = symbol.Id;
+
+        if (symbol is ExternalFunctionSymbol || (symbol is CallableSymbol && symbol.OwnerModule.Id != _currentModule.Id))
+        {
+            if (_model.ExternalFunctions.TryGetValue(_currentModule.Id, out var value))
+                value.Add(symbol.Id);
+            else
+                _model.ExternalFunctions[_currentModule.Id] = [symbol.Id];
+        }
     }
 
     private bool IsTypeAssignableFrom(TypeSymbol to, TypeSymbol from)

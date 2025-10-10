@@ -51,10 +51,6 @@ public class Lexer
         {"else", TokenType.Else},
         {"break", TokenType.Break},
 
-        //{"int", TokenType.IntType},
-        //{"bool", TokenType.BoolType},
-        //{"void", TokenType.VoidType},
-
         {"false", TokenType.BooleanLiteral},
         {"true", TokenType.BooleanLiteral},
 
@@ -63,7 +59,8 @@ public class Lexer
         {"global", TokenType.Global},
         {"class", TokenType.Class},
         {"import", TokenType.Import},
-        {"scope", TokenType.Scope}
+        {"scope", TokenType.Scope},
+        {"enum", TokenType.Enum}
     };
 
     enum LexingMode
