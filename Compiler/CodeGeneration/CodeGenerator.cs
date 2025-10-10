@@ -1167,7 +1167,6 @@ public class CodeGenerator
             if (memberAccess.Member == "length")
             {
                 EmitAddress(memberAccess.Base, RegisterOperand.Rax);
-                Add(RegisterOperand.Rax, new ImmediateOperand(8, 8));
                 Move(destination with{Size = 4}, MemoryOperand.FromOffset("rax", 8, 4));
                 return EmitResult.Value(4);
             }
