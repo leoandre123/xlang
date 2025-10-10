@@ -1,0 +1,26 @@
+     1                                  bits 64
+     2                                  default rel
+     3                                  section .text
+     4                                      extern  ExitProcess, GetStdHandle, WriteFile
+     5                                      global  main
+     6                                  
+     7                                  main:
+     8 00000000 55                          push rbp
+     9 00000001 4889E5                      mov  rbp, rsp
+    10 00000004 4883EC20                    sub rsp, 32
+    11                                  ;  bool b1 = false;
+    12 00000008 B800000000                  mov rax, 0
+    13 0000000D 488945F8                    mov [rbp-8], rax
+    14                                  ;  bool b2 = true;
+    15 00000011 B801000000                  mov rax, 1
+    16 00000016 488945F0                    mov [rbp-16], rax
+    17                                  ;  bool b3 = false;
+    18 0000001A B800000000                  mov rax, 0
+    19 0000001F 488945E8                    mov [rbp-24], rax
+    20                                  ;  int i1 = 144;
+    21 00000023 B890000000                  mov rax, 144
+    22 00000028 488945E0                    mov [rbp-32], rax
+    23 0000002C 488B45E0                    mov rax, [rbp-32]
+    24 00000030 4889EC                      mov rsp, rbp
+    25 00000033 5D                          pop rbp
+    26 00000034 C3                          ret
