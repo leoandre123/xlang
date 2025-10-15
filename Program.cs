@@ -2,7 +2,7 @@
 using System.Diagnostics;
 using xlang.Compiler;
 
-args = "--in program.xl console.xl".Split();
+args = "--in runtime.xl program.xl console.xl".Split();
 
 Console.WriteLine("""
                   ########################################################
@@ -65,10 +65,17 @@ var exitCode = rootCommand.Parse(args).Invoke();
 if (exitCode == 0)
 {
     Console.WriteLine("Running program:");
-    var proc = Process.Start(new ProcessStartInfo(fileName: "program.exe"));
+    var proc = Process.Start(new ProcessStartInfo(fileName: "program.exe")
+    {
+        UseShellExecute = false,   // inherit console
+        RedirectStandardInput = false,
+        RedirectStandardOutput = false,
+        RedirectStandardError = false
+    });
 
     proc.OutputDataReceived += (s, e) => { if (e.Data != null) Console.Out.WriteLine(e.Data); };
     proc.ErrorDataReceived += (s, e) => { if (e.Data != null) Console.Error.WriteLine(e.Data); };
+
 
     await proc.WaitForExitAsync();
 

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Data.SqlTypes;
 using System.Diagnostics;
 using System.Xml.Linq;
 using xlang.Compiler.Parsing;
@@ -41,15 +42,6 @@ public class ConstEnvironment
 {
     public Dictionary<SymbolId, ArithmeticConst> Map = new();
     public ConstEnvironment Clone() => new() { Map = new(Map) };
-
-    public static ConstEnvironment Intersect(ConstEnvironment a, ConstEnvironment b)
-    {
-        var r = new ConstEnvironment();
-        foreach (var (k, va) in a.Map)
-            if (b.Map.TryGetValue(k, out var vb) && va.IsConst && vb.IsConst && va.IntValue == vb.IntValue)
-                r.Map[k] = va;
-        return r;
-    }
 }
 
 public class SemanticAnalyzer
@@ -67,6 +59,8 @@ public class SemanticAnalyzer
     private SemanticModel _model;
 
     private FunctionSymbol _currentFunction;
+    private SymbolId _currentClass;
+
     private int _nextOffset;
     private bool _usesCalls;
     private int _fieldOffset;
@@ -95,6 +89,7 @@ public class SemanticAnalyzer
         _globalScope = new Scope(null);
         _model = new SemanticModel();
 
+        GenerateBuiltins();
         AnalyzeDeclarations();
         ResolveAllTypes(_model.ScopeTreeBaseNode);
         RunLayout();
@@ -107,8 +102,20 @@ public class SemanticAnalyzer
         return _model;
     }
 
+    [Obsolete]
+    public SemanticModel GetModel() => _model;
+
+    /* PASS 0.5 - Generating built-in symbols */
+    private void GenerateBuiltins()
+    {
+        //AddSymbol(new ClassSymbol()
+        //{
+        //
+        //},-1);
+    }
+
     /* PASS 1 (Scopes pass - After this pass all types exist by name) */
-    public void AnalyzeDeclarations()
+    private void AnalyzeDeclarations()
     {
         Logger.LogTrace("Analyzing declarations...");
 
@@ -122,8 +129,7 @@ public class SemanticAnalyzer
             AnalyzeScopeDeclarations(null, prog.Program.Body);
         }
     }
-
-    public void AnalyzeScopeDeclarations(string? name, ScopeBody scope)
+    private void AnalyzeScopeDeclarations(string? name, ScopeBody scope)
     {
         //_currentScope = new Scope(_currentScope);
         var scopeBefore = _currentScopeNode;
@@ -202,7 +208,8 @@ public class SemanticAnalyzer
                     Type = type,
                     Offset = -1,
                     Name = memberVariable.Name,
-                    Span = memberVariable.Span
+                    Span = memberVariable.Span,
+                    AccessType = memberVariable.AccessType
                 };
                 memberSymbolIds.Add(fieldSym.Id);
                 AddSymbol(fieldSym, memberVariable.Id);
@@ -216,7 +223,7 @@ public class SemanticAnalyzer
                     new()
                     {
                         OwnerModule = _currentModule,
-                        Type = new UnresolvedTypeSymbol($"{classDeclaration.Name}*"),
+                        Type = new UnresolvedTypeSymbol($"{classDeclaration.Name}"),
                         Index = 0,
                         Name = "this",
                         Span = function.Span
@@ -233,7 +240,7 @@ public class SemanticAnalyzer
                     {
                         OwnerModule = _currentModule,
                         Type = type,
-                        Index = i,
+                        Index = i + 1,
                         Name = param.Name,
                         Span = function.Parameters[i].Span
                     };
@@ -356,11 +363,11 @@ public class SemanticAnalyzer
             ResolveAllTypes(child);
         }
 
-        foreach (var symbol in node.GetAllSymbols())
+        foreach (var symbol in node.GetAllSymbols(false))
         {
             if (symbol is FunctionSymbol fs)
             {
-                var newParams = new List<ParameterSymbol>();
+                //var newParams = new List<ParameterSymbol>();
 
                 foreach (var par in fs.Parameters)
                 {
@@ -369,14 +376,21 @@ public class SemanticAnalyzer
                         UpdateSymbol(parSym with { Type = ResolveType(parSym.Type.Name, parSym.Span) });
 
                 }
-                var paramFqns = newParams.Select(x => x.Type.FullyQualifiedName);
+                var paramFqns = fs.Parameters.Select(x => _model.GetSymbol<ParameterSymbol>(x).Type.FullyQualifiedName);
                 var fqn = $"{node.GetFullName(fs.Name)}({string.Join(',', paramFqns)})";
                 UpdateSymbol(fs with { FullyQualifiedName = fqn });
             }
 
             if (symbol is SymbolWithType { Type: UnresolvedTypeSymbol } swt)
             {
-                UpdateSymbol(swt with { Type = ResolveType(swt.Type.Name, swt.Span) });
+                if (symbol is MethodSymbol ms && swt.Type.Name == "")
+                {
+                    UpdateSymbol(swt with { Type = Types.Void /**/ });
+                }
+                else
+                {
+                    UpdateSymbol(swt with { Type = ResolveType(swt.Type.Name, swt.Span) });
+                }
             }
         }
     }
@@ -385,7 +399,7 @@ public class SemanticAnalyzer
     /* PASS 1.6 (Layout pass - All TypeSymbols should now have the correct size info) */
     public void RunLayout()
     {
-        var classSymbols = _model.ScopeTreeBaseNode.GetAllSymbols().OfType<ClassSymbol>();
+        var classSymbols = _model.ScopeTreeBaseNode.GetAllSymbols(true).OfType<ClassSymbol>();
 
         //1. Check loops
         //2. Order before layout
@@ -417,8 +431,8 @@ public class SemanticAnalyzer
             }
         }
 
-        classSymbol.Type.Size = offset;
-        classSymbol.Type.Alignment = maxAlign;
+        //classTypeSymbol.ClassSize = offset;
+        //classTypeSymbol.ClassAlignment = maxAlign;
     }
 
 
@@ -496,7 +510,8 @@ public class SemanticAnalyzer
     }
     private void AnalyzeFunctionImplementation(FunctionDeclaration function)
     {
-        var functionSymbol = (_currentScopeNode.GetSymbol(function.Name)?.symbol as FunctionSymbol)!;
+        var functionSymbol = _model.GetSymbol<FunctionSymbol>(function.Id);//(_currentScopeNode.GetSymbol(function.Name)?.symbol as FunctionSymbol)!;
+
 
         _constStack.Push(ConstEnv.Clone());
         //RecordSymbol(functionSymbol.Id);
@@ -852,7 +867,14 @@ public class SemanticAnalyzer
 
         if (declaration is ArrayDeclaration arr)
         {
-            count = arr.Size;
+            //count = ResolveConstantExpression(arr);
+            var cnst = EvalConst(arr.Size);
+
+            if (!cnst.IsConst)
+                throw new SemanticException("Arrays need to be of constant size", arr.Size.Span, _currentModule.File);
+
+            count = cnst.IntValue;
+
             type = new ArrayTypeSymbol(type);
         }
 
@@ -864,6 +886,7 @@ public class SemanticAnalyzer
             OwnerModule = _currentModule,
             Name = declaration.Name,
             Type = type,
+            Count = count,
             Offset = offset,
             Span = declaration.Span
         };
@@ -883,7 +906,7 @@ public class SemanticAnalyzer
                 var classSymbol = LookupClass(classTypeSymbol.Name);//(LookUpSymbol(classTypeSymbol.Name).FirstOrDefault() as ClassSymbol)!;
 
                 var args = call.Arguments.Select(x => ResolveExpressionType(x).Type).ToList();
-                args.Insert(0, new PointerTypeSymbol(classTypeSymbol));
+                args.Insert(0, classTypeSymbol);
 
                 //if (call.Name == classSymbol.Name)
                 //{
@@ -925,6 +948,7 @@ public class SemanticAnalyzer
             MemberAccessExpression a => ResolveAccessType(a),
             MemberCallExpression mc => ResolveMemberCallType(mc),
             ArrayInitializerListExpression ai => ResolveArrayInitializerList(ai),
+            MakeExpression mk => ResolveMakeExpression(mk),
 
             _ => throw new Exception($"Could not resolve type of expression '{expression.GetType()}'")
         };
@@ -986,23 +1010,23 @@ public class SemanticAnalyzer
             throw new SemanticException("Left hand side of assignment must be assignable", expression.Span, _currentModule.File);
         }
 
-        if (leftOperandInfo.Type == Types.String || rightOperandInfo.Type == Types.String)
-        {
-            var list = new ConcatenationList([]);
-
-
-            if (_model.ConcatenationList.TryGetValue(expression.Left.Id, out var leftConcatList))
-                list.List.AddRange(leftConcatList.List);
-            else
-                list.List.Add(expression.Left);
-
-            if (_model.ConcatenationList.TryGetValue(expression.Right.Id, out var rightConcatList))
-                list.List.AddRange(rightConcatList.List);
-            else
-                list.List.Add(expression.Right);
-
-            _model.ConcatenationList[expression.Id] = list;
-        }
+        //if (leftOperandInfo.Type == Types.String || rightOperandInfo.Type == Types.String)
+        //{
+        //    var list = new ConcatenationList([]);
+        //
+        //
+        //    if (_model.ConcatenationList.TryGetValue(expression.Left.Id, out var leftConcatList))
+        //        list.List.AddRange(leftConcatList.List);
+        //    else
+        //        list.List.Add(expression.Left);
+        //
+        //    if (_model.ConcatenationList.TryGetValue(expression.Right.Id, out var rightConcatList))
+        //        list.List.AddRange(rightConcatList.List);
+        //    else
+        //        list.List.Add(expression.Right);
+        //
+        //    _model.ConcatenationList[expression.Id] = list;
+        //  }
 
 
         if (expression.Operator.Type == OperatorType.Assign)
@@ -1035,6 +1059,9 @@ public class SemanticAnalyzer
         if (symbol is ScopeSymbol ss)
             return new ExpressionInfo(new ScopeTypeSymbol(ss.Name, ss.FullyQualifiedName), ValueCategory.RValue);
 
+        if (symbol is ClassSymbol cs)
+            return new ExpressionInfo(new ScopeTypeSymbol(cs.Name, cs.Type.FullyQualifiedName), ValueCategory.RValue);
+
         if (symbol == null)
             throw new SemanticException($"Variable with name '{expression.Name}' has not been declared.", expression.Span, _currentModule.File);
 
@@ -1052,33 +1079,13 @@ public class SemanticAnalyzer
     {
         _usesCalls = true;
 
-
-
-        //if (!symbols.Exists(x => x is FunctionSymbol))
-        //    throw new SemanticException($"'{call}' is not a function.", call.Span);
-
-
-
-
         List<TypeSymbol> argTypes = [];
-        for (var i = 0; i < call.Arguments.Count; i++)
+        foreach (var t in call.Arguments)
         {
-            //var par = funcSymbol.Parameters[i];
-            var argInfo = ResolveExpressionType(call.Arguments[i]);
+            var argInfo = ResolveExpressionType(t);
             argTypes.Add(argInfo.Type);
-            if (call.Arguments[i] is VariableExpression varExpr) RecordRead(LookupVariable(varExpr.Name)!.Id);
-            //if (!IsTypeAssignableFrom(par.Type, argInfo.Type))
-            //{
-            //    throw new SemanticException($"Argument type '{argInfo.Type}' is not assignable to parameter type '{par.Type}'", call.Arguments[i].Span);
-            //}
+            if (t is VariableExpression varExpr) RecordRead(LookupVariable(varExpr.Name)!.Id);
         }
-
-        //var symbol = (symbols.FirstOrDefault(x =>
-        //    x is FunctionSymbol funcSymbol &&
-        //    funcSymbol.Parameters.All(y => IsTypeAssignableFrom(y.Type, argTypes[y.Index]))) as FunctionSymbol)!;
-        //
-        //if (symbol == null)
-        //    throw new SemanticException($"Expected arguments but found {call.Arguments.Count}", call.Span);
 
         var symbol = LookupCallable(call.Name, argTypes); //_currentScope.Lookup(call.Name);
 
@@ -1091,6 +1098,7 @@ public class SemanticAnalyzer
 
         return new ExpressionInfo(symbol.Type, ValueCategory.RValue);
     }
+
     private ExpressionInfo ResolveStringLiteralType(StringLiteralExpression stringLiteral)
     {
         var id = _model.LiteralConstants.FindIndex(x => x is StringConstant s && s.Text == stringLiteral.Value);
@@ -1100,8 +1108,11 @@ public class SemanticAnalyzer
             id = _model.LiteralConstants.Count - 1;
         }
 
+
+        var stringType = LookupClass("string")?.Type ?? throw new Exception("string error");
+
         _model.LiteralConstantMap[stringLiteral.Id] = id;
-        return new ExpressionInfo(Types.String, ValueCategory.RValue);
+        return new ExpressionInfo(stringType, ValueCategory.RValue);
     }
     private ExpressionInfo ResolveFloatLiteralType(FloatLiteralExpression floatLiteral)
     {
@@ -1156,13 +1167,19 @@ public class SemanticAnalyzer
     }
     private ExpressionInfo ResolveAccessType(MemberAccessExpression access)
     {
+       //if (access.Count > 1)
+       //{
+       //    ResolveExpressionType(access.Base);
+       //}
+
+        //var accessBase = GetExpressionBase(access.Base);
         var baseInfo = ResolveExpressionType(access.Base);
 
         if (access.Base is VariableExpression varExpr)
         {
             var symbol = LookupVariable(varExpr.Name) ??
                          throw new SemanticException($"Variable with name '{varExpr.Name}' has not been declared.", varExpr.Span, _currentModule.File);
-            //UseSymbol(symbol, access.Id);
+            UseSymbol(symbol, access.Base.Id);
             RecordRead(symbol.Id);
         }
 
@@ -1173,39 +1190,19 @@ public class SemanticAnalyzer
                 var memberSymbol = _model.GetSymbol<SymbolWithType>(member);
                 if (memberSymbol.Name == access.Member)
                 {
+                    if (!IsMemberAccessible(classTypeSymbol.DeclaringSymbol, memberSymbol))
+                        throw new SemanticException($"'{access.Member}' of '{classTypeSymbol.FullyQualifiedName}' is inaccessible", access.Span, _currentModule.File);
+                    GetSymbolAccessType(memberSymbol);
                     UseSymbol(memberSymbol, access.Id);
                     return new ExpressionInfo(memberSymbol.Type, memberSymbol is FieldSymbol ? ValueCategory.LValue : ValueCategory.RValue);
                 }
             }
         }
-        else if (baseInfo.Type is PointerTypeSymbol ptrSymbol)
-        {
-            if (ptrSymbol.Type is ClassTypeSymbol classTypeSymbolPtr)
-            {
-                foreach (var member in classTypeSymbolPtr.DeclaringSymbol.Members)
-                {
-                    var memberSymbol = _model.GetSymbol<SymbolWithType>(member);
-                    if (memberSymbol.Name == access.Member)
-                    {
-                        UseSymbol(memberSymbol, access.Id);
-                        return new ExpressionInfo(memberSymbol.Type, memberSymbol is FieldSymbol ? ValueCategory.LValue : ValueCategory.RValue);
-                    }
-                }
-            }
-        }
-        else if (baseInfo.Type == Types.String)
-        {
-            switch (access.Member)
-            {
-                case "length": return new ExpressionInfo(Types.Int, ValueCategory.RValue);
-                case "data": return new ExpressionInfo(new PointerTypeSymbol(Types.Byte), ValueCategory.RValue);
-            };
-        }
         else if (baseInfo.Type is ArrayTypeSymbol)
         {
             switch (access.Member)
             {
-                case "length": return new ExpressionInfo(Types.Int, ValueCategory.RValue);
+                case "Length": return new ExpressionInfo(Types.Int, ValueCategory.RValue);
             };
         }
         throw new SemanticException($"Type '{baseInfo.Type}' does not contain member '{access.Member}'", access.Span, _currentModule.File);
@@ -1227,8 +1224,7 @@ public class SemanticAnalyzer
             var classSymbol = LookupClass(baseType.Type.Name) ?? throw new SemanticException($"'{baseType.Type.Name}' is not a class.", call.Span, _currentModule.File);
             callable = _model.GetSymbol<MethodSymbol>(classSymbol.Members.FirstOrDefault(x => _model.GetSymbol(x) is MethodSymbol ms && ms.Name == call.Member));
 
-
-            args.Insert(0, new PointerTypeSymbol(classTypeSymbol));
+            args.Insert(0, classTypeSymbol);
         }
         else
         {
@@ -1261,7 +1257,8 @@ public class SemanticAnalyzer
             ResolveExpressionType(part);
         }
 
-        return new ExpressionInfo(Types.String, ValueCategory.RValue);
+        var stringType = LookupClass("string")?.Type ?? throw new Exception("string error");
+        return new ExpressionInfo(stringType, ValueCategory.RValue);
     }
     private ExpressionInfo ResolveArrayInitializerList(ArrayInitializerListExpression initializerList)
     {
@@ -1273,6 +1270,54 @@ public class SemanticAnalyzer
         }
 
         return new ExpressionInfo(new ArrayTypeSymbol(type), ValueCategory.RValue);
+    }
+    private ExpressionInfo ResolveMakeExpression(MakeExpression makeExpression)
+    {
+        _usesCalls = true;
+        IReadOnlyList<Expression> args;
+        string callName;
+        if (makeExpression.Call is CallExpression call)
+        {
+            args = call.Arguments;
+            callName = call.Name;
+        }
+        else if (makeExpression.Call is MemberCallExpression memberCall)
+        {
+            args = memberCall.Arguments;
+
+            var info = ResolveExpressionType(memberCall.Base);
+            if (info.Type is not ScopeTypeSymbol scope)
+                throw new SemanticException($"'{info.Type}' is not a scope", memberCall.Base.Span, _currentModule.File);
+            callName = $"{scope.FullyQualifiedName}.{memberCall.Member}";
+        }
+        else
+        {
+            throw new SemanticException("'make' can only be used with constructors!", makeExpression.Span, _currentModule.File);
+        }
+
+
+
+        var classSymbol = LookupClass(callName) ?? throw new SemanticException($"No class named '{callName}'", makeExpression.Call.Span, _currentModule.File);
+
+
+        List<TypeSymbol> argTypes = [classSymbol.Type];
+        foreach (var t in args)
+        {
+            var argInfo = ResolveExpressionType(t);
+            argTypes.Add(argInfo.Type);
+            if (t is VariableExpression varExpr) RecordRead(LookupVariable(varExpr.Name)!.Id);
+        }
+
+        var constructorId = classSymbol.Members.FirstOrDefault(x => _model.GetSymbol(x) is CallableSymbol callSymbol && AreParametersAssignableFrom(callSymbol.Parameters, argTypes)) ?? throw new SemanticException($"No suitable constructor found '{callName}'", makeExpression.Call.Span, _currentModule.File);
+        var constructor = _model.GetSymbol<CallableSymbol>(constructorId);
+
+        UseSymbol(constructor, makeExpression.Call.Id);
+        RecordRead(constructor.Id);
+        UseSymbol(classSymbol, makeExpression.Id);
+
+        //TODO: Är väl tekniskt sett en LValue men men
+        _model.ExpressionData[makeExpression.Call.Id] = new ExpressionInfo(classSymbol.Type, ValueCategory.RValue);
+        return new ExpressionInfo(classSymbol.Type, ValueCategory.RValue);
     }
 
 
@@ -1302,16 +1347,48 @@ public class SemanticAnalyzer
         }
     }
 
+    private bool IsMemberAccessible(ClassSymbol classSymbol, Symbol memberSymbol)
+    {
+        return GetSymbolAccessType(memberSymbol) switch
+        {
+            EAccessType.Public => true,
+            EAccessType.Module => memberSymbol.OwnerModule.Id == _currentModule.Id,
+            EAccessType.Private => memberSymbol.OwnerModule.Id == _currentModule.Id && classSymbol.Id == _currentClass,
+            _ => throw new ArgumentOutOfRangeException()
+        };
+    }
+    private EAccessType GetSymbolAccessType(Symbol symbol)
+    {
+        return symbol switch
+        {
+            ConstructorSymbol constructorSymbol => constructorSymbol.AccessType,
+            MethodSymbol methodSymbol => methodSymbol.AccessType,
+            FunctionSymbol functionSymbol => functionSymbol.AccessType,
+            FieldSymbol fieldSymbol => fieldSymbol.AccessType,
+            _ => throw new ArgumentOutOfRangeException(nameof(symbol))
+        };
+    }
+
+    //private Expression GetExpressionBase(Expression expression)
+    //{
+    //    if (expression is not MemberAccessExpression member) return expression;
+    //
+    //    var count = member.Count;
+    //
+    //    
+    //
+    //    //GetExpressionBase()
+    //}
+
     private bool IsTypeAssignableFrom(TypeSymbol to, TypeSymbol from)
     {
         //var baseTo = GetBaseType(to);
         //var baseFrom = GetBaseType(from);
 
         if (Types.IsBuiltInConversionAllowed(to, from)) return true;
-
+        if (Types.IsImplicitConversionAllowed(to, from)) return true;
         return to == from;
     }
-
     private bool AreParametersAssignableFrom(IReadOnlyList<ParameterSymbol> parameters, List<TypeSymbol> arguments)
     {
         if (parameters.Count != arguments.Count) return false;
@@ -1322,6 +1399,10 @@ public class SemanticAnalyzer
         }
 
         return true;
+    }
+    private bool AreParametersAssignableFrom(IReadOnlyList<SymbolId> parameters, List<TypeSymbol> arguments)
+    {
+        return AreParametersAssignableFrom(parameters.Select(_model.GetSymbol<ParameterSymbol>).ToList(), arguments);
     }
 
     private static int Align(int num, int alignment)
@@ -1334,7 +1415,7 @@ public class SemanticAnalyzer
         var first = -1;
         for (var i = 0; i < count; i++)
         {
-            _nextOffset += typeSymbol.Size;
+            _nextOffset += typeSymbol.IsReferenceType ? 8 : typeSymbol.Size;
             _nextOffset = Align(_nextOffset, typeSymbol.Size);
             if (first == -1) first = _nextOffset;
         }
@@ -1355,7 +1436,7 @@ public class SemanticAnalyzer
         if (scopeVar != null)
             return scopeVar;
 
-        var sym = _currentScopeNode.FindSymbolUp(name);
+        var sym = _currentScopeNode.FindSymbolUp(name, SymbolType.All);
 
         if (sym != null)
         {
@@ -1374,11 +1455,9 @@ public class SemanticAnalyzer
 
         return null;
     }
-
     private ClassSymbol? LookupClass(string name)
     {
-        var sym = _currentScopeNode.FindSymbolUp(name);
-
+        var sym = _currentScopeNode.FindSymbolUp(name, SymbolType.TypeDeclaring);
         {
             if (sym?.symbol is ClassSymbol cls)
             {
@@ -1400,24 +1479,17 @@ public class SemanticAnalyzer
     }
     private CallableSymbol? LookupCallable(string name, List<TypeSymbol> args)
     {
-        var sym = _currentScopeNode.FindSymbolUp(name);
+        var symbols = _currentScopeNode.FindManySymbolsUp(name, SymbolType.Callable);
         {
-            if (sym?.symbol is CallableSymbol cls)
+            foreach (var symbol in symbols)
             {
-                return cls;
+                if (symbol.symbol is not CallableSymbol callable)
+                    continue;
+
+                if (AreParametersAssignableFrom(callable.Parameters, args))
+                    return callable;
             }
         }
-
-        //foreach (var import in _currentProgram.Imports)
-        //{
-        //    var scopeNode = _model.ScopeTreeBaseNode.GetNode(import.Scope) ?? throw new SemanticException("Could not resolve import", import.Span);
-        //    (_, sym) = scopeNode.GetSymbol(name);
-        //    if (sym is ClassSymbol cls)
-        //    {
-        //        return cls;
-        //    }
-        //}
-
         return null;
     }
 
@@ -1430,7 +1502,6 @@ public class SemanticAnalyzer
     {
         return TryResolveType(typeName) ?? throw new SemanticException($"Could not resolve type '{typeName}'", span, _currentModule.File);
     }
-
     private TypeSymbol? TryResolveType(string typeName)
     {
 
@@ -1449,7 +1520,7 @@ public class SemanticAnalyzer
 
         var result = new List<(string fqn, Symbol symbol)>();
 
-        var sym = _currentScopeNode.FindSymbolUp(name);
+        var sym = _currentScopeNode.FindSymbolUp(name, SymbolType.TypeDeclaring);
 
         if (sym?.symbol != null)
         {
@@ -1458,7 +1529,8 @@ public class SemanticAnalyzer
 
         foreach (var import in _currentModule.Program.Imports)
         {
-            var scopeNode = _model.ScopeTreeBaseNode.GetNode(import.Scope) ?? throw new SemanticException("Could not resolve import", import.Span, _currentModule.File);
+            var scopeNode = _model.ScopeTreeBaseNode.GetNode(import.Scope);// ?? throw new SemanticException("Could not resolve import", import.Span, _currentModule.File);
+            if (scopeNode == null) continue;
             sym = scopeNode.GetSymbol(name);
             if (sym?.symbol != null)
             {
@@ -1474,6 +1546,14 @@ public class SemanticAnalyzer
 
         return null;
     }
+
+
+
+    private bool AreUnsafeOperationsAllowed()
+    {
+        return false;
+    }
+
 
     /* Diagnostics functions */
     public void RecordSymbol(SymbolId symbolId)

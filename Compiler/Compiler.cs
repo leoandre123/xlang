@@ -28,6 +28,10 @@ public record AssemblerSettings
 
 public static class Compiler
 {
+
+
+    private static SemanticAnalyzer tmpAnalyzer;
+
     public static bool Build(string[] files, CompilerSettings settings)
     {
         var sw = Stopwatch.StartNew();
@@ -52,10 +56,13 @@ public static class Compiler
                 msg = e.Message;
             }
 
+            if (tmpAnalyzer != null)
+                PrintScopeTree(tmpAnalyzer.GetModel().ScopeTreeBaseNode);
+
             Logger.LogError(msg);
             success = false;
         }
-            
+
 
         sw.Stop();
 
@@ -89,7 +96,9 @@ public static class Compiler
         }
 
         var analyzer = new SemanticAnalyzer(modules);
+        tmpAnalyzer = analyzer;
         var model = analyzer.Analyze();
+
 
         LogWarnings(model.Diagnostics, modules);
 
@@ -234,7 +243,7 @@ public static class Compiler
             Console.WriteLine(" (Scope)");
         }
 
-        var allSymbols = node.GetAllSymbols();
+        var allSymbols = node.GetAllSymbols(false);
         foreach (var symbol in allSymbols)
         {
             for (var i = 0; i < indent + 1; i++)

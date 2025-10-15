@@ -2,6 +2,7 @@
 
 public enum EAccessType
 {
-    Global,
+    Public,
+    Module,
     Private
 }

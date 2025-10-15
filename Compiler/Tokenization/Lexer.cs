@@ -54,13 +54,20 @@ public class Lexer
         {"false", TokenType.BooleanLiteral},
         {"true", TokenType.BooleanLiteral},
 
-        {"alias", TokenType.Type},
+        {"public", TokenType.Public},
+        {"private", TokenType.Private},
+
+        {"alias", TokenType.Alias},
         {"extern", TokenType.Extern},
         {"global", TokenType.Global},
         {"class", TokenType.Class},
         {"import", TokenType.Import},
         {"scope", TokenType.Scope},
-        {"enum", TokenType.Enum}
+        {"enum", TokenType.Enum},
+        {"make", TokenType.Make},
+        {"struct", TokenType.Struct},
+        {"inline", TokenType.Inline},
+        {"const", TokenType.Const}
     };
 
     enum LexingMode
@@ -199,7 +206,7 @@ public class Lexer
                 currentValue += Consume();
             }
 
-            return new Token(TokenType.IntegerLiteral, currentValue, new SourceSpan(startIndex, _currentIndex - startIndex));
+            return new Token(TokenType.NumericLiteral, currentValue, new SourceSpan(startIndex, _currentIndex - startIndex));
         }
 
         if (c == '"')
@@ -246,7 +253,7 @@ public class Lexer
         if (sym1 == "/*")
         {
             Consume();
-            
+
             while (!Eof() && !(Peek() == '*' && Peek(1) == '/'))
             {
                 currentValue += Consume();

@@ -19,7 +19,10 @@ public class Parser
     private int _currentIndex = 0;
     private readonly HashSet<string> _typeNames = [.. Types.BuiltIn.Select(x => x.Name)];
 
-    public TokenType[] AccessModifiers = [TokenType.Global, TokenType.Private];
+
+    public TokenType[] AccessModifiers = [TokenType.Public, TokenType.Private];
+    //public TokenType[] Modifiers = [];
+
 
     public Parser(List<Token> tokens, string filePath)
     {
@@ -34,11 +37,29 @@ public class Parser
     private Token Expect(TokenType type, string? message = null) => Peek().Type == type ?
         _tokens[_currentIndex++] :
         throw new ParsingException(message ?? $"Expected {type} but found {Peek().Type}", Peek().Span, _file);
+    private bool IsTypeAndConsume(TokenType type)
+    {
+        if (!IsType(type)) return false;
+        Consume();
+        return true;
 
-
+    }
     private bool IsBinary() =>
         _tokens[_currentIndex].Type == TokenType.Operator &&
         Operator.GetOperator(_tokens[_currentIndex].Value ?? "") != null;
+
+    private EAccessType ParseAccessType()
+    {
+        var accMod = Consume();
+        return accMod.Type switch
+        {
+            TokenType.Public => EAccessType.Public,
+            TokenType.Module => EAccessType.Module,
+            TokenType.Private => EAccessType.Private,
+            _ => throw new NotImplementedException(),
+        };
+    }
+
 
 
     private BooleanLiteralExpression ParseBooleanLiteral()
@@ -51,9 +72,10 @@ public class Parser
 
         throw new ParsingException("Could not parse boolean literal", lit.Span, _file);
     }
-    private Expression ParseIntegerLiteral()
+    private Expression ParseNumericLiteral()
     {
-        var lit = Expect(TokenType.IntegerLiteral);
+        var lit = Expect(TokenType.NumericLiteral);
+
         if (int.TryParse(lit.Value, out var i))
         {
             return new IntegerLiteralExpression(i, lit.Span);
@@ -63,7 +85,7 @@ public class Parser
             return new FloatLiteralExpression(f, lit.Span);
         }
 
-        throw new ParsingException("Could not parse integer literal", lit.Span, _file);
+        throw new ParsingException($"Could not parse literal '{lit.Value}'", lit.Span, _file);
     }
 
     private Expression ParseExpression(int minPrecedence = 0)
@@ -138,6 +160,7 @@ public class Parser
         return ParsePrimaryExpression();
     }
 
+
     private Expression ParsePostfix(Expression expression)
     {
         if (IsType(TokenType.Operator))
@@ -196,6 +219,10 @@ public class Parser
         if (IsType(TokenType.Period))
         {
             var dot = Consume();
+            var count = 1;
+            while (IsTypeAndConsume(TokenType.Period))
+                count++;
+
             var member = Expect(TokenType.Identifier);
 
             if (IsType(TokenType.LeftParenthesis))
@@ -213,12 +240,12 @@ public class Parser
                 var rp = Consume();
 
                 expression = new MemberCallExpression(expression, member.Value!, args,
-                    SourceSpan.FromStartAndEnd(member.Span.Start, rp.Span.End));
+                    SourceSpan.FromStartAndEnd(expression.Span.Start, rp.Span.End));
             }
             else
             {
-                expression = new MemberAccessExpression(expression, member.Value!,
-                    SourceSpan.FromStartAndEnd(dot.Span.Start, member.Span.End));
+                expression = new MemberAccessExpression(expression, member.Value!, count,
+                    SourceSpan.FromStartAndEnd(expression.Span.Start, member.Span.End));
             }
 
 
@@ -232,9 +259,9 @@ public class Parser
 
     private Expression ParsePrimaryExpression()
     {
-        if (IsType(TokenType.IntegerLiteral))
+        if (IsType(TokenType.NumericLiteral))
         {
-            return ParseIntegerLiteral();
+            return ParseNumericLiteral();
         }
         if (IsType(TokenType.BooleanLiteral))
         {
@@ -280,7 +307,6 @@ public class Parser
 
             return expr;
         }
-
         if (IsType(TokenType.LeftBracket))
         {
             var startToken = Consume();
@@ -296,7 +322,12 @@ public class Parser
 
             return new ArrayInitializerListExpression(elements, SourceSpan.FromStartAndEnd(startToken.Span.Start, endToken.Span.End));
         }
-
+        if (IsType(TokenType.Make))
+        {
+            var startToken = Consume();
+            var expr = ParseExpression();
+            return new MakeExpression(expr, SourceSpan.FromStartAndEnd(startToken.Span.Start, expr.Span.End));
+        }
         throw new ParsingException($"Could not parse primary expression '{Peek().Value}' with type '{Peek().Type}'", Peek().Span, _file);
     }
 
@@ -324,7 +355,7 @@ public class Parser
             typeName += "*";
         }
         var isArray = false;
-        var arraySize = -1;
+        Expression arraySize = null;
 
         if (IsType(TokenType.LeftBracket))
         {
@@ -332,8 +363,7 @@ public class Parser
             Consume();
             if (!IsType(TokenType.RightBracket))
             {
-                var size = Expect(TokenType.IntegerLiteral);
-                arraySize = int.Parse(size.Value!);
+                arraySize = ParseExpression();
             }
             Expect(TokenType.RightBracket);
         }
@@ -353,11 +383,11 @@ public class Parser
 
         if (isArray)
         {
-            if (arraySize == -1)
+            if (arraySize == null)
             {
                 if (exp is ArrayInitializerListExpression aile)
                 {
-                    arraySize = aile.Elements.Count;
+                    arraySize = new IntegerLiteralExpression(aile.Elements.Count, aile.Span);
                 }
                 else
                 {
@@ -449,7 +479,7 @@ public class Parser
             Expect(TokenType.Semicolon);
             return new Break(br.Span);
         }
-            
+
 
         throw new ParsingException($"Could not parse statement {Peek().Type}", Peek().Span, _file);
     }
@@ -471,9 +501,13 @@ public class Parser
 
     private ClassField ParseClassVariable()
     {
+        var accessType = IsType(AccessModifiers) ? ParseAccessType() : EAccessType.Private;
+        var isInline = IsType(TokenType.Inline);
+        if (isInline) Consume();
+
         var varDec = ParseVariableDeclaration();
 
-        return new ClassField(varDec.Name, varDec.Type, varDec.Initial, varDec.Span);
+        return new ClassField(varDec.Name, varDec.Type, accessType, varDec.Initial, isInline, varDec.Span);
     }
 
     //private ClassMethodDeclaration ParseClassMethod()
@@ -524,33 +558,15 @@ public class Parser
 
         while (!IsType(TokenType.RightBrace))
         {
-            //Expect access modifier
+            FunctionAttribute? att = null;
 
-            //if (IsType(TokenType.LeftParenthesis, 2)) // Functions
-            //{
-            //    members.Add(ParseClassMethod());
-            //}
-            //else if (Peek().Value == nameToken.Value && IsType(TokenType.LeftParenthesis, 1))
-            //{
-            //    members.Add(ParseConstructor());
-            //}
-            //else
-            //{
-            //    members.Add(ParseClassVariable());
-            //}
-
-            /*
-             * int x;
-             * int x;
-             * int x(
-             * int x(
-             * vec( 
-             */
+            if (IsType(TokenType.At))
+                att = ParseAttribute();
 
             var i = 0;
             if (IsType(AccessModifiers, i)) i++;
             if (IsType(TokenType.LeftParenthesis, i + 1)) members.Add(ParseFunction(true, true));
-            else if (IsType(TokenType.LeftParenthesis, i + 2)) members.Add(ParseFunction(true, true));
+            else if (IsType(TokenType.LeftParenthesis, i + 2)) members.Add(ParseFunction(true, false));
             else members.Add(ParseClassVariable());
 
 
@@ -564,21 +580,25 @@ public class Parser
     {
         var startToken = Expect(TokenType.At);
         var attributeType = Expect(TokenType.Identifier);
-        Expect(TokenType.LeftParenthesis);
+
+        var endToken = attributeType;
 
         List<Expression> arguments = [];
-
-        while (!IsType(TokenType.RightParenthesis))
+        if (IsType(TokenType.LeftParenthesis))
         {
-            if (arguments.Count != 0)
+            Consume();
+            while (!IsType(TokenType.RightParenthesis))
             {
-                Expect(TokenType.Comma);
+                if (arguments.Count != 0)
+                {
+                    Expect(TokenType.Comma);
+                }
+
+                arguments.Add(ParseExpression());
             }
 
-            arguments.Add(ParseExpression());
+            endToken = Consume(); //Consume right par
         }
-
-        var endToken = Consume(); //Consume right par
 
         // = Expect(TokenType.Semicolon);
 
@@ -586,7 +606,7 @@ public class Parser
     }
     private AliasDeclaration ParseType()
     {
-        var startToken = Expect(TokenType.Type);
+        var startToken = Expect(TokenType.Alias);
         var ident = Expect(TokenType.Identifier);
         Expect(TokenType.Operator);
         var type = Expect(TokenType.Identifier);
@@ -607,14 +627,28 @@ public class Parser
     }
     private FunctionDeclaration ParseFunction(bool isInstance, bool isConstructor, FunctionAttribute? attribute = null)
     {
-        var isExtern = IsType(TokenType.Extern);
-        var isGlobal = IsType(TokenType.Global);
-        var isPrivate = IsType(TokenType.Private);
+        Token startToken = Peek();
 
-        if (isExtern || isGlobal || isPrivate) Consume();
+        var accessType = IsType(AccessModifiers) ? ParseAccessType(): EAccessType.Private;
+        var isExtern = IsTypeAndConsume(TokenType.Extern);
 
+        string returnType;
+        if (isConstructor)
+        {
+            returnType = "";
+        }
+        else
+        {
+            var tok = Expect(TokenType.Identifier, "Expected a return type!");
+            returnType = tok.Value!;
 
-        var returnToken = Expect(TokenType.Identifier, "Expected a return type!");
+            if (Peek().Value == "*")
+            {
+                Consume();
+                returnType += "*";
+            }
+        }
+
         var nameToken = Expect(TokenType.Identifier, "Expected a function name");
         Expect(TokenType.LeftParenthesis);
 
@@ -640,7 +674,7 @@ public class Parser
         }
         Expect(TokenType.RightParenthesis);
 
-        var spanEnd = 0;
+        int spanEnd;
         Block? body = null;
         if (isExtern)
         {
@@ -653,8 +687,32 @@ public class Parser
             spanEnd = body.Span.End;
         }
 
+        var isUnsafe = attribute?.Name == "unsafe";
 
-        return new FunctionDeclaration(nameToken.Value!, returnToken.Value!, isGlobal ? EAccessType.Global : EAccessType.Private, parameters, isInstance, isExtern, body, SourceSpan.FromStartAndEnd(returnToken.Span.Start, spanEnd));
+        return new FunctionDeclaration(nameToken.Value!, returnType, accessType, parameters, isInstance, isExtern, isUnsafe, body, SourceSpan.FromStartAndEnd(startToken.Span.Start, spanEnd));
+    }
+
+    private GlobalVariableDeclaration ParseGlobalVariableDeclaration()
+    {
+        var startToken = Peek();
+
+        var isConst = IsTypeAndConsume(TokenType.Const);
+        var accessType = IsType(AccessModifiers) ? ParseAccessType() : EAccessType.Private;
+
+        var type = Expect(TokenType.Identifier).Value!;
+        var name = Expect(TokenType.Identifier).Value!;
+
+        Expression? expr = null;
+        if (Peek() is { Type: TokenType.Operator, Value: "=" })
+        {
+            Consume();
+            expr = ParseExpression();
+        }
+
+        var endToken = Expect(TokenType.Semicolon);
+
+        return new GlobalVariableDeclaration(name, type, accessType, expr,
+            isConst, SourceSpan.FromStartAndEnd(startToken.Span.Start, endToken.Span.End));
     }
 
     private ScopeBody ParseScopeBody()
@@ -663,24 +721,29 @@ public class Parser
         List<FunctionDeclaration> functions = [];
         List<AliasDeclaration> types = [];
         List<ScopeDeclaration> scopes = [];
+        List<GlobalVariableDeclaration> globals = [];
 
         var firstToken = Peek();
 
+
+
         while (!IsType([TokenType.Eof, TokenType.RightBrace]))
         {
-            if (IsType(TokenType.Class))
+            FunctionAttribute? att = null;
+
+            if (IsType(TokenType.At))
+                att = ParseAttribute();
+
+            if (IsType([TokenType.Const]))
+                globals.Add(ParseGlobalVariableDeclaration());
+            else if (IsType(TokenType.Class))
                 classes.Add(ParseClass());
-            else if (IsType([TokenType.Identifier, TokenType.Extern, TokenType.Global]))
-                functions.Add(ParseFunction(false, false));
-            else if (IsType(TokenType.Type))
+            else if (IsType([TokenType.Identifier, TokenType.Extern, ..AccessModifiers]))
+                functions.Add(ParseFunction(false, false, att));
+            else if (IsType(TokenType.Alias))
                 types.Add(ParseType());
             else if (IsType(TokenType.Scope))
                 scopes.Add(ParseScope());
-            else if (IsType(TokenType.At))
-            {
-                var attribute = ParseAttribute();
-                functions.Add(ParseFunction(false, false, attribute));
-            }
             else
                 throw new ParsingException("Only functions, classes and type declarations are allowed in the global scope", Peek().Span, _file);
         }
@@ -691,11 +754,17 @@ public class Parser
     private ScopeDeclaration ParseScope()
     {
         var startToken = Expect(TokenType.Scope);
-        var scopeNameToken = Expect(TokenType.Identifier);
+        var scope = Expect(TokenType.Identifier).Value!;
+        while (IsType(TokenType.Period))
+        {
+            Consume();
+            scope += "." + Expect(TokenType.Identifier).Value!;
+        }
+
         Expect(TokenType.LeftBrace);
         var body = ParseScopeBody();
         var endToken = Expect(TokenType.RightBrace);
-        return new ScopeDeclaration(scopeNameToken.Value!, body,
+        return new ScopeDeclaration(scope, body,
             SourceSpan.FromStartAndEnd(startToken.Span.Start, endToken.Span.End));
     }
 
@@ -707,10 +776,15 @@ public class Parser
         while (IsType(TokenType.Import))
         {
             var startToken = Consume();
-            var scope = Expect(TokenType.Identifier);
+            var scope = Expect(TokenType.Identifier).Value!;
+            while (IsType(TokenType.Period))
+            {
+                Consume();
+                scope += "." + Expect(TokenType.Identifier).Value;
+            }
             var endToken = Expect(TokenType.Semicolon);
 
-            imports.Add(new ProgramImport(scope.Value!, SourceSpan.FromStartAndEnd(startToken.Span.Start, endToken.Span.End)));
+            imports.Add(new ProgramImport(scope, SourceSpan.FromStartAndEnd(startToken.Span.Start, endToken.Span.End)));
         }
 
         var body = ParseScopeBody();
@@ -723,6 +797,5 @@ public class Parser
             Program = program
         };
     }
-
 }
 

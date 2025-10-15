@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using System;
 using System.ComponentModel.Design;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -24,7 +25,7 @@ public class AssemblyWriter
     public void Append(string str, bool indented = true) => _sb.AppendLine(indented ? $"    {str}" : str);
     public void Comment(string comment)
     {
-        foreach (var line in comment.Split(Environment.NewLine))
+        foreach (var line in comment.Split('\n'))
         {
             _sb.AppendLine($";  {line}");
         }
@@ -87,9 +88,9 @@ public class CodeGenerator
         Logger.LogDebug($"Generating machine code {_program.Id}");
 
         List<string> externalFunction = ["ExitProcess", "GetProcessHeap", "HeapAlloc",
-            .._model.ExternalFunctions[_module.Id]
-                .Select(y => Utils.Utils.SanitizeFqn(_model.GetSymbol<CallableSymbol>(y).FullyQualifiedName))];
-        var globals = _model.Symbols.Values.Where(x => x is FunctionSymbol { AccessType: EAccessType.Global } fs && x.OwnerModule.Program.Id == _program.Id).Select(y => Utils.Utils.SanitizeFqn((y as FunctionSymbol).FullyQualifiedName)).ToList();
+            ..(!_model.ExternalFunctions.ContainsKey(_module.Id) ?[]: _model.ExternalFunctions[_module.Id]
+                .Select(y => Utils.Utils.SanitizeFqn(_model.GetSymbol<CallableSymbol>(y).FullyQualifiedName)))];
+        var globals = _model.Symbols.Values.Where(x => x is FunctionSymbol { AccessType: EAccessType.Public } fs && x.OwnerModule.Program.Id == _program.Id).Select(y => Utils.Utils.SanitizeFqn((y as FunctionSymbol).FullyQualifiedName)).ToList();
 
 
         if (_model.GetEntryPoint()?.OwnerModule.Program.Id == _program.Id)
@@ -179,7 +180,7 @@ public class CodeGenerator
         EmitFunctionPrologue(function);
         EmitStatement(function.Body);
 
-        if (function.ReturnType == "void")
+        if (functionSymbol.Type == Types.Void)
         {
             if (_isMain)
             {
@@ -207,6 +208,9 @@ public class CodeGenerator
 
         _writer.Comment($"Locals: {meta.LocalsSize} bytes");
         _writer.Comment($"Leaf: {meta.IsLeaf}");
+        _writer.Comment($"Params: \n{string.Join('\n', functionSymbol.Parameters.Select((x, i) =>
+            $"{_model.GetSymbol(x).Name}: {AssemblyUtils.GetParameterRegister(i).AsmName}, {AssemblyUtils.GetParameterLocation(i, true).AsmName}"
+            ))}");
         _writer.Comment("Prologue");
 
         // if (!meta.IsLeaf)
@@ -243,70 +247,8 @@ public class CodeGenerator
                     break;
                 }
             case VariableDeclaration declaration:
-                {
-                    if (declaration.Initial != null)
-                    {
-                        var declType = _model.GetSymbol<VariableSymbol>(declaration.Id).Type;
-                        if (declType is ClassTypeSymbol && declaration.Initial is CallExpression call && call.Name == declType.Name)
-                        {
-                            //Constructor call
-                            var callableSymbol = _model.GetSymbol<CallableSymbol>(call.Id);
-
-                            EmitFunctionCall(call.Name,
-                                call.Arguments.Count,
-                                () =>
-                                {
-                                    for (var i = 4; i < call.Arguments.Count; i++)
-                                    {
-                                        EmitExpression(call.Arguments[i]);
-                                        var argType = _model.ExpressionData[call.Arguments[i].Id].Type;
-                                        var parType = _model.GetSymbol<ParameterSymbol>(callableSymbol.Parameters[i]).Type;
-                                        if (FitsInRegister(argType.Size))
-                                        {
-                                            //Move($"[rsp+{32 + (i - 4) * 8}]", "rax", parType.Size);
-                                            Move(MemoryOperand.FromOffset("rsp", 32 + (i - 4) * 8, parType.Size), RegisterOperand.Rax);
-                                        }
-                                        else
-                                        {
-                                            MoveMemory(MemoryOperand.FromOffset("rsp", 32 + (i - 4) * 8, parType.Size), new MemoryOperand("[rax]", parType.Size), RegisterOperand.R11);
-                                        }
-                                    }
-
-
-                                    if (call.Arguments.Count > 0) { EmitExpression(call.Arguments[0]); _writer.Append("mov rcx, rax"); }
-                                    if (call.Arguments.Count > 1) { EmitExpression(call.Arguments[1]); _writer.Append("mov rdx, rax"); }
-                                    if (call.Arguments.Count > 2) { EmitExpression(call.Arguments[2]); _writer.Append("mov r8, rax"); }
-                                    if (call.Arguments.Count > 3) { EmitExpression(call.Arguments[3]); _writer.Append("mov r9, rax"); }
-
-
-
-                                }
-                            );
-                        }
-                        else if (declaration is not ArrayDeclaration)
-                        {
-                            EmitVariableAssignment(GetVariableDeclarationLocation(declaration), GetVariableDeclarationSize(declaration), declaration.Initial);
-                        }
-                        else
-                        {
-                            if (declaration.Initial is ArrayInitializerListExpression aile)
-                            {
-                                for (var i = 0; i < aile.Elements.Count; i++)
-                                {
-                                    EmitVariableAssignment(GetVariableDeclarationLocation(declaration, i), GetVariableDeclarationSize(declaration), aile.Elements[i]);
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        var count = declaration is ArrayDeclaration arr ? arr.Size : 1;
-                        for (var i = 0; i < count; i++)
-                            Move(new MemoryOperand(GetVariableDeclarationLocation(declaration, i), GetVariableDeclarationSize(declaration)), ImmediateOperand.Zero);
-                    }
-
-                    break;
-                }
+                EmitVariableDeclaration(declaration);
+                break;
             case IfStatement ifStatement:
                 {
                     var endIfLabel = _writer.CreateLabel("endif");
@@ -377,6 +319,40 @@ public class CodeGenerator
         }
     }
 
+    public void EmitVariableDeclaration(VariableDeclaration declaration)
+    {
+        var symbol = _model.GetSymbol<VariableSymbol>(declaration.Id);
+
+        if (declaration.Initial != null)
+        {
+
+            if (symbol.Type is ClassTypeSymbol && declaration.Initial is CallExpression call && call.Name == symbol.Type.Name)
+            {
+
+            }
+            else if (declaration is not ArrayDeclaration)
+            {
+                EmitVariableAssignment(GetVariableDeclarationLocation(declaration), GetVariableDeclarationSize(declaration), declaration.Initial);
+            }
+            else
+            {
+                if (declaration.Initial is ArrayInitializerListExpression aile)
+                {
+                    for (var i = 0; i < aile.Elements.Count; i++)
+                    {
+                        EmitVariableAssignment(GetVariableDeclarationLocation(declaration, i), GetVariableDeclarationSize(declaration), aile.Elements[i]);
+                    }
+                }
+            }
+        }
+        else
+        {
+
+            for (var i = 0; i < symbol.Count; i++)
+                Move(new MemoryOperand(GetVariableDeclarationLocation(declaration, i), GetVariableDeclarationSize(declaration)), ImmediateOperand.Zero);
+        }
+
+    }
     private void EmitReturn(Return returnStatement)
     {
         if (returnStatement.Expression != null)
@@ -398,16 +374,15 @@ public class CodeGenerator
         }
     }
 
-    /// <summary>
-    /// Calculates <paramref name="expression"/> and stores the result in RAX.
-    /// If the type of <paramref name="expression"/> is larger than 8 bytes the address of the result is stored in RAX
-    /// </summary>
-    /// <exception cref="NotSupportedException"></exception>
+
     private EmitResult EmitExpression(Expression expression, Operand? destination = null)
     {
-        destination ??= Types.IsFloatType(_model.ExpressionData[expression.Id].Type) ?
+        var exprType = _model.ExpressionData[expression.Id].Type;
+        destination ??= Types.IsFloatType(exprType) ?
             new RegisterOperand("xmm0", 8) :
             new RegisterOperand("rax", 8);
+
+        Debug.Assert(FitsInRegister(exprType.Size) || exprType.Size == 0);
 
         if (_model.ConcatenationList.TryGetValue(expression.Id, out var concatList))
         {
@@ -435,14 +410,21 @@ public class CodeGenerator
                 var strConst = _model.LiteralConstants[strConstId] as StringConstant;
 
                 var strLbl = $"LC{strConstId}";
-                var tmpVarOff = AllocateTemp(16);
+                //var tmpVarOff = AllocateTemp(16);
 
-                BinaryInstruction("lea", new RegisterOperand("rax", 8), new MemoryOperand($"[rel {strLbl}]", 8));
-                Move(new MemoryOperand(GetLocation(tmpVarOff), 8), new RegisterOperand("rax", 8)); //data
-                Move(new MemoryOperand(GetLocation(tmpVarOff, 8), 4), new ImmediateOperand(strConst.Text.Length, 4)); //length
-                BinaryInstruction("lea", destination, new MemoryOperand($"{GetLocation(tmpVarOff)}", 8));
+                EmitHeapAllocation(new ImmediateOperand(16, 8));
+                BinaryInstruction("lea", RegisterOperand.Rcx, MemoryOperand.FromLabel(strLbl, 8));
+                Move(MemoryOperand.FromOffset("rax", 0, 8), RegisterOperand.Rcx);
+                Move(MemoryOperand.FromOffset("rax", 8, 4), new ImmediateOperand(strConst.Text.Length, 4));
 
-                return EmitResult.Address();
+                if (destination != RegisterOperand.Rax)
+                    Move(destination, RegisterOperand.Rax);
+
+                //Move(new MemoryOperand(GetLocation(tmpVarOff), 8), new RegisterOperand("rax", 8)); //data
+                //Move(new MemoryOperand(GetLocation(tmpVarOff, 8), 4), new ImmediateOperand(strConst.Text.Length, 4)); //length
+                //BinaryInstruction("lea", destination, new MemoryOperand($"{GetLocation(tmpVarOff)}", 8));
+
+                return EmitResult.Value(8);
             case StringInterpolationExpression strIntExpr:
                 return EmitStringInterpolation(strIntExpr);
             case VariableExpression varExpr:
@@ -456,52 +438,66 @@ public class CodeGenerator
 
             case IndexExpression indExpr:
                 {
-                    var baseType = _model.ExpressionData[indExpr.Base.Id].Type;
-                    var elemType = baseType is PointerTypeSymbol p ? p.Type
-                        : baseType;//(baseType as ArrayTypeSymbol)!.Type;
+                    var baseType = GetExpressionType(indExpr.Base);
+                    var elemType = GetElementType(baseType);
+                    // EmitIndexAddress(indExpr, RegisterOperand.Rax);
 
-                    EmitIndexAddress(indExpr, destination);
 
                     if (FitsInRegister(elemType.Size))
                     {
-                        Move(RegisterOperand.Rax, new MemoryOperand("[rax]", elemType.Size));
+                        EmitIndexAddress(indExpr, RegisterOperand.Rax);
+                        Move(destination, new MemoryOperand("[rax]", elemType.Size));
                         return EmitResult.Value(elemType.Size);
                     }
-                    return EmitResult.Address();
+                    else
+                    {
+                        EmitIndexAddress(indExpr, destination);
+                        return EmitResult.Address();
+                    }
+
                 }
             case MemberAccessExpression accExpr:
                 return EmitMemberAccess(accExpr, destination);
-
             case MemberCallExpression memCallExpr:
                 return EmitMemberCallExpression(memCallExpr, destination);
-
+            case MakeExpression makeExpression:
+                return EmitMakeExpression(makeExpression, destination);
             default:
                 throw new NotSupportedException($"Expression not handled: {expression.GetType().Name}");
         }
     }
 
 
-    /// <summary>
-    /// Puts the address of <paramref name="expression"/> onto RAX
-    /// </summary>
-    /// <exception cref="NotSupportedException"></exception>
+
     private void EmitAddress(Expression expression, Operand destination)
     {
         switch (expression)
         {
             case VariableExpression varExpr:
                 {
-                    var loc = GetVariableAsOperand(varExpr);
-                    if (IsLargeParameter(varExpr))
-                        Move(destination, loc);
+                    var sym = _model.GetSymbol<SymbolWithType>(varExpr.Id);
+
+                    if (sym is FieldSymbol fieldSymbol)
+                    {
+                        var thisPtr = AssemblyUtils.GetParameterLocation(0, true);
+                        Move(RegisterOperand.Rax, thisPtr);
+                        Lea(destination, MemoryOperand.FromOffset("rax", fieldSymbol.Offset, 8));
+                        return;
+                    }
                     else
                     {
-                        if (destination is RegisterOperand)
-                            Lea(destination, loc);
+                        var loc = GetVariableAsOperand(varExpr);
+                        if (IsLargeParameter(varExpr))
+                            Move(destination, loc);
                         else
                         {
-                            Lea(RegisterOperand.Rax, loc);
-                            Move(destination, RegisterOperand.Rax);
+                            if (destination is RegisterOperand)
+                                Lea(destination, loc);
+                            else
+                            {
+                                Lea(RegisterOperand.Rax, loc);
+                                Move(destination, RegisterOperand.Rax);
+                            }
                         }
                     }
 
@@ -513,67 +509,59 @@ public class CodeGenerator
                     return;
                 }
             case MemberAccessExpression memberAccess:
-                //Klass members
                 {
-                    if (_model.ExpressionData[memberAccess.Base.Id].Type is ClassTypeSymbol cts)
+                    var type = GetExpressionType(memberAccess.Base);
+                    if (type is ClassTypeSymbol cts)
                     {
                         var fieldSymbol = _model.GetSymbol<FieldSymbol>(memberAccess.Id);
-                        if (memberAccess.Base is VariableExpression varExpr)
-                        {
-                            var loc = GetVariableAsOperand(varExpr);
-                            if (IsLargeParameter(varExpr))
-                                Move(destination, loc);
-                            else
-                                Lea(destination, loc);
-                            return;
-                        }
+                        EmitAddress(memberAccess.Base, destination);
+                        Add(destination, new ImmediateOperand(fieldSymbol.Offset, 8));
+                        return;
                     }
 
                     throw new NotSupportedException();
-                    return;
                 }
-
             default:
                 throw new NotSupportedException($"Expression of type '{expression.GetType()}' is not addressable");
         }
     }
-    /// <summary>
-    /// Puts the address of <paramref name="indexExpression"/> onto RAX
-    /// </summary>
-    /// <exception cref="NotSupportedException"></exception>
     private void EmitIndexAddress(IndexExpression indexExpression, Operand destination)
     {
-        //y[5] === *((&y)+5)
-        //
-        // int[] arr[]
+        var baseType = GetExpressionType(indexExpression.Base);
+        var elemType = GetElementType(baseType);
+        Debug.Assert(FitsInRegister(elemType.Size));
+
+        var idxLoc = GetTemporary();
+        var baseLoc = RegisterOperand.Rax;
 
 
-        var baseType = _model.ExpressionData[indexExpression.Base.Id].Type;
-        var elemType =
-            baseType is PointerTypeSymbol p ? p.Type
-            : baseType is ArrayTypeSymbol a ? a.Type
-            : throw new NotSupportedException("Only array and pointer types can be indexed");
+        EmitExpression(indexExpression.Index, idxLoc);
 
         if (baseType is PointerTypeSymbol)
-            EmitExpression(indexExpression.Base, destination);
+            EmitExpression(indexExpression.Base, baseLoc);
         else
-            EmitAddress(indexExpression.Base, destination);
+            EmitAddress(indexExpression.Base, baseLoc);
 
-        _writer.Append("mov r10, rax");
+        if (idxLoc is RegisterOperand idxReg)
+        {
+            var resOp = MemoryOperand.FromIndex(baseLoc, idxReg, elemType.Size, 0, elemType.Size);
+            Lea(destination, resOp);
+        }
+        else
+        {
+            Mul(idxLoc, new ImmediateOperand(elemType.Size, 8));
+            Add(baseLoc, idxLoc);
+            Lea(destination, baseLoc);
+        }
 
-
-        EmitExpression(indexExpression.Index);
-        _writer.Append("mov r11, rax");
-
-        _writer.Append($"imul r11, r11, {elemType.Size}");
-
-        _writer.Append("add r10, r11");
-        _writer.Append("mov rax, r10");
+        FreeTemporary(idxLoc);
     }
 
     private EmitResult EmitCallExpression(CallExpression callExpression, Operand destination)
     {
         var funcSym = _model.GetSymbol<CallableSymbol>(callExpression.Id);
+
+        var size = funcSym.Type.IsReferenceType ? 8 : funcSym.Type.Size;
 
         EmitFunctionCall(Utils.Utils.SanitizeFqn(funcSym.FullyQualifiedName),
             callExpression.Arguments.Count,
@@ -596,23 +584,23 @@ public class CodeGenerator
             Move(destination, new RegisterOperand("rax", 8));
         }
 
-        return FitsInRegister(funcSym.Type.Size) ? EmitResult.Value(funcSym.Type.Size) : EmitResult.Address();
+        return FitsInRegister(size) ? EmitResult.Value(size) : EmitResult.Address();
     }
     private EmitResult EmitMemberCallExpression(MemberCallExpression memCallExpr, Operand destination)
     {
         var methSym = _model.GetSymbol<CallableSymbol>(memCallExpr.Id);
         var callName = Utils.Utils.SanitizeFqn(methSym.FullyQualifiedName);
         var baseType = _model.ExpressionData[memCallExpr.Base.Id].Type;
-
+        var size = methSym.Type.IsReferenceType ? 8 : methSym.Type.Size;
 
         if (baseType is ScopeTypeSymbol)
         {
-            EmitFunctionCall(callName, memCallExpr.Arguments.Select(x => (x, false)).ToList());
+            EmitFunctionCall(callName, memCallExpr.Arguments);
         }
         else
         {
             Debug.Assert(baseType is ClassTypeSymbol);
-            EmitFunctionCall(callName, [(memCallExpr.Base, true), .. memCallExpr.Arguments.Select(x => (x, false))]);
+            EmitFunctionCall(callName, [memCallExpr.Base, .. memCallExpr.Arguments]);
         }
 
 
@@ -621,9 +609,30 @@ public class CodeGenerator
             Move(destination, new RegisterOperand("rax", 8));
         }
 
-        return FitsInRegister(methSym.Type.Size) ? EmitResult.Value(methSym.Type.Size) : EmitResult.Address();
+        return FitsInRegister(size) ? EmitResult.Value(size) : EmitResult.Address();
     }
+    private EmitResult EmitMakeExpression(MakeExpression makeExpression, Operand destination)
+    {
+        var classSymbol = _model.GetSymbol<ClassSymbol>(makeExpression.Id);
+        var constructorSymbol = _model.GetSymbol<CallableSymbol>(makeExpression.Call.Id);
+        var callName = Utils.Utils.SanitizeFqn(constructorSymbol.FullyQualifiedName);
+        var arguments = (makeExpression.Call as CallExpression)?.Arguments ??
+                        (makeExpression.Call as MemberCallExpression)!.Arguments;
 
+        EmitHeapAllocation(new ImmediateOperand(classSymbol.Type.Size, 8));
+        Push(RegisterOperand.Rax);
+
+        //var methSym = _model.GetSymbol<CallableSymbol>(memCallExpr.Id);
+        //var callName = Utils.Utils.SanitizeFqn(methSym.FullyQualifiedName);
+        //var baseType = _model.ExpressionData[memCallExpr.Base.Id].Type;
+
+        EmitFunctionCall(callName, RegisterOperand.Rax, arguments);
+
+        //EmitExpression(makeExpression.Call, destination);
+        Pop(RegisterOperand.Rax);
+        Move(destination, RegisterOperand.Rax);
+        return EmitResult.Value(8);
+    }
     private EmitResult EmitBinary(BinaryExpression binaryExpression, Operand destination)
     {
         if (binaryExpression.Operator.Type == OperatorType.Assign)
@@ -631,7 +640,7 @@ public class CodeGenerator
             return EmitAssignment(binaryExpression, destination);
         }
 
-        if (_model.ExpressionData[binaryExpression.Id].Type == Types.String)
+        if (_model.ExpressionData[binaryExpression.Id].Type.Name == "string")
         {
             return EmitStringOperation(binaryExpression);
         }
@@ -651,6 +660,8 @@ public class CodeGenerator
 
         Operand left = destination;
         Operand right;
+        var mustFreeRight = false;
+
         var isFloat = Types.IsFloatType(_model.ExpressionData[binaryExpression.Id].Type);
 
         if (isFloat)
@@ -683,23 +694,20 @@ public class CodeGenerator
             if (binaryExpression.Right.IsNumericLiteral() && binaryExpression.Operator.Type is not (OperatorType.Div or OperatorType.Mod))
             {
                 var leftResult = EmitExpression(binaryExpression.Left, destination);
-                Debug.Assert(leftResult.Type != EmitType.Address);
-
-                //left = RegisterOperand.Rax with { Size = leftResult.Size };
                 left = left with { Size = leftResult.Size };
-                right = new ImmediateOperand(binaryExpression.Right.GetNumericalLiteralValue(), 4);
+                right = new ImmediateOperand(binaryExpression.Right.GetNumericalLiteralValue(), leftResult.Size);
+
+                Debug.Assert(leftResult.Type != EmitType.Address);
             }
             else
             {
-                var rightResult = EmitExpression(binaryExpression.Right);
-                Debug.Assert(rightResult.Type != EmitType.Address);
-                Push(RegisterOperand.Rax);
-                var leftResult = EmitExpression(binaryExpression.Left);
-                Debug.Assert(leftResult.Type != EmitType.Address);
-                Pop(RegisterOperand.Rcx);
-                //left = RegisterOperand.Rax with { Size = leftResult.Size };
+                right = GetTemporary();
+                mustFreeRight = true;
+                var rightResult = EmitExpression(binaryExpression.Right, right);
+                var leftResult = EmitExpression(binaryExpression.Left, destination);
                 left = left with { Size = leftResult.Size };
-                right = RegisterOperand.Rcx with { Size = rightResult.Size };
+
+                Debug.Assert(rightResult.Type != EmitType.Address && leftResult.Type != EmitType.Address);
             }
         }
 
@@ -780,16 +788,16 @@ public class CodeGenerator
         switch (unaryExpression.Operator.Type)
         {
             case OperatorType.PreIncrement:
-                EmitIncrementDecrement((unaryExpression.Operand as VariableExpression) ?? throw new Exception("Must be an l-value"), true, true);
+                EmitIncrementDecrement(unaryExpression.Operand, true, true);
                 break;
             case OperatorType.PreDecrement:
-                EmitIncrementDecrement((unaryExpression.Operand as VariableExpression) ?? throw new Exception("Must be an l-value"), false, true);
+                EmitIncrementDecrement(unaryExpression.Operand, false, true);
                 break;
             case OperatorType.PostIncrement:
-                EmitIncrementDecrement((unaryExpression.Operand as VariableExpression) ?? throw new Exception("Must be an l-value"), true, false);
+                EmitIncrementDecrement(unaryExpression.Operand, true, false);
                 break;
             case OperatorType.PostDecrement:
-                EmitIncrementDecrement((unaryExpression.Operand as VariableExpression) ?? throw new Exception("Must be an l-value"), false, false);
+                EmitIncrementDecrement(unaryExpression.Operand, false, false);
                 break;
             case OperatorType.Neg:
                 EmitExpression(unaryExpression.Operand, destination);
@@ -818,6 +826,14 @@ public class CodeGenerator
 
                     throw new NotSupportedException("A pointer should be a value");
                 }
+            case OperatorType.LogicalNot: // !
+                {
+                    EmitExpression(unaryExpression.Operand, destination);
+                    BinaryInstruction("cmp", destination, ImmediateOperand.Zero);
+                    _writer.Append("setz al");
+                    _writer.Append("movzx rax, al");
+                    break;
+                }
 
             default: throw new NotSupportedException($"Unary not handled '{unaryExpression.Operator.Symbol}'");
         }
@@ -827,108 +843,106 @@ public class CodeGenerator
 
     private EmitResult EmitStringOperation(BinaryExpression expression)
     {
-        /*
-         * Koncept
-         *
-         *
-         */
-
 
         if (expression.Operator.Type == OperatorType.Add)
         {
-            if (_model.ExpressionData[expression.Left.Id].Type == Types.String)
-            {
-                //Load string length;
-            }
+            //if (_model.ExpressionData[expression.Left.Id].Type == Types.String)
+            //{
+            //    //Load string length;
+            //}
         }
         return EmitResult.Address();
     }
     private EmitResult EmitStringConcatenation(ConcatenationList concatenationList)
     {
-        if (concatenationList.List.Count == 1)
-            return EmitExpression(concatenationList.List[0]);
-
-        var tmpVarOff = AllocateTemp(16);
-        Move(new MemoryOperand(GetLocation(tmpVarOff, 8), 4), new ImmediateOperand(0, 4));
-
-        //Calculate result size
-        foreach (var expr in concatenationList.List)
-        {
-            var type = _model.ExpressionData[expr.Id].Type;
-            EmitExpression(expr);
-
-            if (type == Types.String)
-            {
-                Move(new RegisterOperand("rax", 4), new MemoryOperand("[rax+8]", 4));
-                Add(new MemoryOperand(GetLocation(tmpVarOff, 8), 4), new MemoryOperand("rax", 4));
-            }
-            else
-            {
-                throw new NotImplementedException();
-            }
-        }
-
-        EmitHeapAllocation(new MemoryOperand(GetLocation(tmpVarOff, 8), 4));
-
-
-        Move(new MemoryOperand(GetLocation(tmpVarOff), 8), new RegisterOperand("rax", 8)); //Place heap ptr in string struct
-
-
-        Push(new RegisterOperand("rax", 8));
-        foreach (var expr in concatenationList.List)
-        {
-            var type = _model.ExpressionData[expr.Id].Type;
-            EmitExpression(expr);
-
-            if (type == Types.String)
-            {
-                Pop(new RegisterOperand("r10", 8));
-
-                Move(new RegisterOperand("r11", 8), new MemoryOperand("[rax]", 8));
-                Move(new RegisterOperand("rcx", 4), new MemoryOperand("[rax+8]", 4));
-
-
-                //rax: ptr to string (ptr*, len)*
-                //r10: heap ptr
-                //r11: str data ptr
-                //rcx: bytes left
-
-
-                var lblLoop = _writer.CreateLabel("str_copy");
-                var lblEnd = _writer.CreateLabel("str_copy_end");
-
-                _writer.Label(lblLoop);
-
-                BinaryInstruction("test", new RegisterOperand("rcx", 4), new RegisterOperand("rcx", 4));
-                _writer.Append($"jz {lblEnd}");
-
-                Move(new RegisterOperand("rdx", 1), new MemoryOperand("[r11]", 1));
-                Move(new MemoryOperand("[r10]", 1), new RegisterOperand("rdx", 1));
-
-
-
-                _writer.Append($"inc {GetRegister("r11", 8)}"); //Increase form string pointer
-                _writer.Append($"inc {GetRegister("r10", 8)}"); //Increase to string pointer
-                _writer.Append($"dec {GetRegister("rcx", 4)}"); //Decrease bytes left
-                _writer.Append($"jmp {lblLoop}");
-                _writer.Label(lblEnd);
-
-
-
-                Push(new RegisterOperand("r10", 8));
-            }
-            else
-            {
-                throw new NotImplementedException();
-            }
-        }
-
-
-        Pop(new RegisterOperand("rax", 8));
-
-        Lea(RegisterOperand.Rax, new MemoryOperand(GetLocation(tmpVarOff), 8));
-
-        return EmitResult.Address();
+        //if (concatenationList.List.Count == 1)
+        //    return EmitExpression(concatenationList.List[0]);
+        //
+        //var tmpVar = AllocateTemp(16);
+        //
+        //
+        //Move(tmpVar.WithOffset(8, 4), new ImmediateOperand(0, 4));
+        ////Move(new MemoryOperand(GetLocation(tmpVarOff, 8), 4), new ImmediateOperand(0, 4));
+        //
+        ////Calculate result size
+        //foreach (var expr in concatenationList.List)
+        //{
+        //    var type = _model.ExpressionData[expr.Id].Type;
+        //    EmitExpression(expr);
+        //
+        //    if (type.Name == "string")
+        //    {
+        //        Move(new RegisterOperand("rax", 4), new MemoryOperand("[rax+8]", 4));
+        //        Add(new MemoryOperand(GetLocation(tmpVarOff, 8), 4), new MemoryOperand("rax", 4));
+        //    }
+        //    else
+        //    {
+        //        throw new NotImplementedException();
+        //    }
+        //}
+        //
+        //EmitHeapAllocation(new MemoryOperand(GetLocation(tmpVarOff, 8), 4));
+        //
+        //
+        //Move(new MemoryOperand(GetLocation(tmpVarOff), 8), new RegisterOperand("rax", 8)); //Place heap ptr in string struct
+        //
+        //
+        //Push(new RegisterOperand("rax", 8));
+        //foreach (var expr in concatenationList.List)
+        //{
+        //    var type = _model.ExpressionData[expr.Id].Type;
+        //    EmitExpression(expr);
+        //
+        //    if (type.Name == "string")
+        //    {
+        //        Pop(new RegisterOperand("r10", 8));
+        //
+        //        Move(new RegisterOperand("r11", 8), new MemoryOperand("[rax]", 8));
+        //        Move(new RegisterOperand("rcx", 4), new MemoryOperand("[rax+8]", 4));
+        //
+        //
+        //        //rax: ptr to string (ptr*, len)*
+        //        //r10: heap ptr
+        //        //r11: str data ptr
+        //        //rcx: bytes left
+        //
+        //
+        //        var lblLoop = _writer.CreateLabel("str_copy");
+        //        var lblEnd = _writer.CreateLabel("str_copy_end");
+        //
+        //        _writer.Label(lblLoop);
+        //
+        //        BinaryInstruction("test", new RegisterOperand("rcx", 4), new RegisterOperand("rcx", 4));
+        //        _writer.Append($"jz {lblEnd}");
+        //
+        //        Move(new RegisterOperand("rdx", 1), new MemoryOperand("[r11]", 1));
+        //        Move(new MemoryOperand("[r10]", 1), new RegisterOperand("rdx", 1));
+        //
+        //
+        //
+        //        _writer.Append($"inc {GetRegister("r11", 8)}"); //Increase form string pointer
+        //        _writer.Append($"inc {GetRegister("r10", 8)}"); //Increase to string pointer
+        //        _writer.Append($"dec {GetRegister("rcx", 4)}"); //Decrease bytes left
+        //        _writer.Append($"jmp {lblLoop}");
+        //        _writer.Label(lblEnd);
+        //
+        //
+        //
+        //        Push(new RegisterOperand("r10", 8));
+        //    }
+        //    else
+        //    {
+        //        throw new NotImplementedException();
+        //    }
+        //}
+        //
+        //
+        //Pop(new RegisterOperand("rax", 8));
+        //
+        //Lea(RegisterOperand.Rax, new MemoryOperand(GetLocation(tmpVarOff), 8));
+        //
+        //return EmitResult.Address();
+        throw new NotSupportedException();
     }
     private EmitResult EmitStringInterpolation(StringInterpolationExpression interpolation)
     {
@@ -996,8 +1010,9 @@ public class CodeGenerator
         var right = _model.ExpressionData[expression.Right.Id].Type;
         //var size = Math.Min(left.Size, right.Size);
 
-        if (expression.Left is VariableExpression varExpr && FitsInRegister(left.Size))
+        if (expression.Left is VariableExpression varExpr && FitsInRegister(left.Size) && _model.GetSymbol(varExpr.Id) is not FieldSymbol)
         {
+
             if (Types.IsFloatType(left) && Types.IsIntegerType(right))
             {
                 EmitExpression(expression.Right, RegisterOperand.Rax);
@@ -1032,7 +1047,7 @@ public class CodeGenerator
             else
             {
                 Pop(RegisterOperand.Rcx);
-                Move(new MemoryOperand("[rcx]", left.Size), new MemoryOperand(destination.AsmName, right.Size));
+                Move(new MemoryOperand("[rcx]", left.Size), destination with { Size = right.Size });//new MemoryOperand(destination.AsmName, right.Size));
                 return EmitResult.Address();
             }
         }
@@ -1087,7 +1102,7 @@ public class CodeGenerator
     private EmitResult EmitVariableExpression(VariableExpression variableExpression, Operand destination)
     {
         var sym = _model.GetSymbol(variableExpression.Id) as SymbolWithType;
-        var size = sym.Type.Size;
+        var size = sym.Type.IsReferenceType ? 8 : sym.Type.Size;
 
         if (sym is FieldSymbol fieldSymbol)
         {
@@ -1105,6 +1120,7 @@ public class CodeGenerator
         else
         {
             var loc = GetVariableExpressionLocation(variableExpression);
+
             if (FitsInRegister(size))
             {
                 var regSize = Math.Max(4, size);
@@ -1120,28 +1136,9 @@ public class CodeGenerator
     {
         var baseType = _model.ExpressionData[memberAccess.Base.Id].Type;
 
-        if (baseType is ClassTypeSymbol classTypeSymbol)
-        {
-            var fieldSymbol = _model.GetSymbol<FieldSymbol>(memberAccess.Id);
-            if (memberAccess.Base is VariableExpression varExpr)
-            {
-                var loc = GetVariableExpressionLocation(varExpr, byteOffset: classTypeSymbol.FieldOffset[fieldSymbol.Id]);
-                var size = fieldSymbol.Type.Size;
 
-                if (FitsInRegister(size))
-                {
-                    var regSize = Math.Max(4, size);
-                    Move(destination with { Size = regSize }, new MemoryOperand(loc, size));
-                    return IsFloatOperand(destination) ? EmitResult.FloatValue(regSize) : EmitResult.Value(regSize);
-                }
-
-                EmitAddress(varExpr, destination);
-                return EmitResult.Address();
-            }
-        }
-        else if (baseType is PointerTypeSymbol pointerSymbol)
         {
-            if (pointerSymbol.Type is ClassTypeSymbol classTypeSymbolPtr)
+            if (baseType is ClassTypeSymbol classTypeSymbol)
             {
                 var fieldSymbol = _model.GetSymbol<FieldSymbol>(memberAccess.Id);
                 if (memberAccess.Base is VariableExpression varExpr)
@@ -1152,32 +1149,59 @@ public class CodeGenerator
                     if (FitsInRegister(fieldSymbol.Type.Size))
                     {
                         var regSize = Math.Max(4, fieldSymbol.Type.Size);
-                        Move(destination with { Size = regSize }, MemoryOperand.FromOffset("rax", classTypeSymbolPtr.FieldOffset[fieldSymbol.Id], regSize));
+                        Move(destination with { Size = regSize },
+                            MemoryOperand.FromOffset("rax", classTypeSymbol.FieldOffset[fieldSymbol.Id], regSize));
                         return IsFloatOperand(destination) ? EmitResult.FloatValue(regSize) : EmitResult.Value(regSize);
                     }
+
                     Lea(destination, MemoryOperand.FromOffset("rax", fieldSymbol.Offset, 8));
                     return EmitResult.Address();
                 }
-
-
-            }
-        }
-        else if (baseType == Types.String)
-        {
-            if (memberAccess.Member == "length")
-            {
-                EmitAddress(memberAccess.Base, RegisterOperand.Rax);
-                Move(destination with{Size = 4}, MemoryOperand.FromOffset("rax", 8, 4));
-                return EmitResult.Value(4);
-            }
-            if (memberAccess.Member == "data")
-            {
-                EmitAddress(memberAccess.Base, RegisterOperand.Rax);
-                Move(destination, new MemoryOperand("[rax]", 8));
-                return EmitResult.Value(8);
             }
         }
 
+
+
+        //if (baseType is ClassTypeSymbol classTypeSymbol)
+        //{
+        //    var fieldSymbol = _model.GetSymbol<FieldSymbol>(memberAccess.Id);
+        //    if (memberAccess.Base is VariableExpression varExpr)
+        //    {
+        //        var loc = GetVariableExpressionLocation(varExpr, byteOffset: classTypeSymbol.FieldOffset[fieldSymbol.Id]);
+        //        var size = fieldSymbol.Type.Size;
+        //
+        //        if (FitsInRegister(size))
+        //        {
+        //            var regSize = Math.Max(4, size);
+        //            Move(destination with { Size = regSize }, new MemoryOperand(loc, size));
+        //            return IsFloatOperand(destination) ? EmitResult.FloatValue(regSize) : EmitResult.Value(regSize);
+        //        }
+        //
+        //        EmitAddress(varExpr, destination);
+        //        return EmitResult.Address();
+        //    }
+        //}
+        //else if (baseType is PointerTypeSymbol pointerSymbol)
+        //{
+        //    if (pointerSymbol.Type is ClassTypeSymbol classTypeSymbolPtr)
+        //    {
+        //        var fieldSymbol = _model.GetSymbol<FieldSymbol>(memberAccess.Id);
+        //        if (memberAccess.Base is VariableExpression varExpr)
+        //        {
+        //            var ptrOp = GetVariableAsOperand(varExpr);
+        //
+        //            Move(RegisterOperand.Rax, ptrOp);
+        //            if (FitsInRegister(fieldSymbol.Type.Size))
+        //            {
+        //                var regSize = Math.Max(4, fieldSymbol.Type.Size);
+        //                Move(destination with { Size = regSize }, MemoryOperand.FromOffset("rax", classTypeSymbolPtr.FieldOffset[fieldSymbol.Id], regSize));
+        //                return IsFloatOperand(destination) ? EmitResult.FloatValue(regSize) : EmitResult.Value(regSize);
+        //            }
+        //            Lea(destination, MemoryOperand.FromOffset("rax", fieldSymbol.Offset, 8));
+        //            return EmitResult.Address();
+        //        }
+        //    }
+        //}
         throw new NotSupportedException($"Expression not handled: '{memberAccess.Member}' on '{baseType}'"); ;
     }
 
@@ -1187,35 +1211,63 @@ public class CodeGenerator
     {
         EmitFunctionCall("GetProcessHeap", 0);
 
-        Move(new RegisterOperand("r11", 4), lengthOperand);
+        Move(RegisterOperand.R11, lengthOperand);
 
         EmitFunctionCall("HeapAlloc", 0, () =>
         {
-            _writer.Append("mov rcx, rax");
-            _writer.Append("xor edx, edx");
-            _writer.Append("mov r8d, r11d");
+            Move(RegisterOperand.Rcx, RegisterOperand.Rax);
+            Xor(RegisterOperand.Rdx, RegisterOperand.Rdx);
+            Move(RegisterOperand.R8, RegisterOperand.R11);
+            //_writer.Append("mov rcx, rax");
+            //_writer.Append("xor edx, edx");
+            //_writer.Append("mov r8d, r11d");
         });
     }
 
 
-    private void EmitFunctionCall(string name, List<(Expression exp, bool address)> arguments)
+    private void EmitFunctionCall(string name, Operand firstParameter, IReadOnlyList<Expression> arguments)
     {
         EmitFunctionCall(name,
             arguments.Count,
             () =>
             {
-
+                Move(AssemblyUtils.GetParameterRegister(0), firstParameter);
                 for (var i = 0; i < arguments.Count; i++)
                 {
-                    var argType = _model.ExpressionData[arguments[i].exp.Id].Type;
+                    var argType = _model.ExpressionData[arguments[i].Id].Type;
+                    var size = argType.IsReferenceType ? 8 : argType.Size;
 
-                    if (FitsInRegister(argType.Size) && !arguments[i].address)
+                    if (FitsInRegister(size))
                     {
-                        EmitExpression(arguments[i].exp, AssemblyUtils.GetParameterLocation(i, false));
+                        EmitExpression(arguments[i], AssemblyUtils.GetParameterLocation(i + 1, false));
                     }
                     else
                     {
-                        EmitAddress(arguments[i].exp, AssemblyUtils.GetParameterLocation(i, false));
+                        EmitAddress(arguments[i], AssemblyUtils.GetParameterLocation(i + 1, false));
+                    }
+
+                }
+            }
+        );
+    }
+    private void EmitFunctionCall(string name, IReadOnlyList<Expression> arguments)
+    {
+        EmitFunctionCall(name,
+            arguments.Count,
+            () =>
+            {
+                for (var i = 0; i < arguments.Count; i++)
+                {
+                    var argType = _model.ExpressionData[arguments[i].Id].Type;
+                    var size = argType.IsReferenceType ? 8 : argType.Size;
+
+                    if (FitsInRegister(size))
+                    {
+                        EmitExpression(arguments[i], AssemblyUtils.GetParameterLocation(i, false));
+                    }
+                    else
+                    {
+                        EmitAddress(arguments[i], AssemblyUtils.GetParameterLocation(i, false));
                     }
 
                 }
@@ -1244,15 +1296,17 @@ public class CodeGenerator
         }
         else if (expression is StringLiteralExpression strLit)
         {
-            var strLbl = $"LC{_model.LiteralConstantMap[strLit.Id]}";
-            Lea(RegisterOperand.Rax, MemoryOperand.FromLabel(strLbl, 8));
-            Move(new MemoryOperand(location, 8), new RegisterOperand("rax", 8));
-            Move(new MemoryOperand(location, 8).WithOffset(8, 4), new ImmediateOperand(strLit.Value.Length, 4));
+            //var strLbl = $"LC{_model.LiteralConstantMap[strLit.Id]}";
+            //Lea(RegisterOperand.Rax, MemoryOperand.FromLabel(strLbl, 8));
+            //Move(new MemoryOperand(location, 8), new RegisterOperand("rax", 8));
+            //Move(new MemoryOperand(location, 8).WithOffset(8, 4), new ImmediateOperand(strLit.Value.Length, 4));
+            EmitExpression(expression, new MemoryOperand(location, 8));
         }
         else
         {
             var exprType = _model.ExpressionData[expression.Id].Type;
-            if (FitsInRegister(exprType.Size))
+            var exprSize = exprType.IsReferenceType ? 8 : exprType.Size;
+            if (FitsInRegister(exprSize))
             {
                 var emitResult = EmitExpression(expression, new MemoryOperand(location, size));
                 Debug.Assert(emitResult.Type == EmitType.Value);
@@ -1267,24 +1321,91 @@ public class CodeGenerator
     }
 
     //Unaries
-    private void EmitIncrementDecrement(VariableExpression operand, bool increment, bool prefix)
+    private void EmitIncrementDecrement(Expression expression, bool increment, bool prefix)
     {
-        var loc = GetVariableExpressionLocation(operand);
-        var size = GetVariableExpressionSize(operand);
-        var sizeModifier = GetSizeModifier(size);
+        var type = GetExpressionType(expression);
 
-        EmitExpression(operand);
-
-        _writer.Append($"{(increment ? "inc" : "dec")} {sizeModifier} {loc}");
-        if (prefix)
+        if (expression is VariableExpression variableExpression)
         {
-            _writer.Append($"{(increment ? "inc" : "dec")} {sizeModifier} {GetRegister("rax", size)}");
+            var loc = GetVariableExpressionLocation(variableExpression);
+            var size = GetVariableExpressionSize(variableExpression);
+            var sizeModifier = GetSizeModifier(size);
+
+            EmitExpression(variableExpression);
+
+            _writer.Append($"{(increment ? "inc" : "dec")} {sizeModifier} {loc}");
+            if (prefix)
+            {
+                _writer.Append($"{(increment ? "inc" : "dec")} {sizeModifier} {GetRegister("rax", size)}");
+            }
         }
+        else
+        {
+            EmitAddress(expression, RegisterOperand.Rcx);
+            var operand = new MemoryOperand("[rcx]", type.Size);
+            if (increment) Inc(operand); else Dec(operand);
+            Move(RegisterOperand.Rax, MemoryOperand.FromOffset("rax", 0, 8));
+            if (prefix)
+            {
+                if (increment) Inc(RegisterOperand.Rax); else Dec(RegisterOperand.Rax);
+            }
+        }
+
+    }
+
+
+    private readonly List<RegisterOperand> _volatileOrder =
+        [
+            RegisterOperand.R10,
+            RegisterOperand.R11,
+            RegisterOperand.Rcx,
+            RegisterOperand.Rdx,
+            RegisterOperand.R8,
+            RegisterOperand.R9
+        ];
+
+    private HashSet<RegisterOperand> _usedRegisters;
+
+    private Operand GetTemporary()
+    {
+        foreach (var reg in _volatileOrder)
+        {
+            if (_usedRegisters.Add(reg))
+            {
+                return reg;
+            }
+        }
+
+        return AllocateTemp(8);
+    }
+
+    private void FreeTemporary(Operand operand)
+    {
+        if (operand is RegisterOperand regOp)
+            _usedRegisters.Remove(regOp);
+    }
+
+
+    //Helpers (Do not write to assembly)
+    private TypeSymbol GetExpressionType(Expression expr) => _model.ExpressionData[expr.Id].Type;
+    private TypeSymbol GetElementType(TypeSymbol baseType)
+    {
+        return baseType is PointerTypeSymbol p ? p.Type
+            : baseType is ArrayTypeSymbol a ? a.Type
+            : throw new NotSupportedException("Only array and pointer types can be indexed");
     }
 
 
 
-    //Helpers (Do not write to assembly)
+
+
+    private MemoryOperand AllocateTemp(int bytes)
+    {
+        _tempCursor += bytes;
+        var off = _localsSize + _tempCursor;
+        _tempMax = Math.Max(_tempMax, _tempCursor);
+        return MemoryOperand.FromOffset("reg", -off, bytes);
+    }
 
     private string GetLocation(int location, int byteOffset = 0) => $"[rbp-{location - byteOffset}]";
     private string GetParameterRegister(int index)
@@ -1345,7 +1466,9 @@ public class CodeGenerator
     }
     private int GetVariableDeclarationSize(VariableDeclaration declaration)
     {
-        return _model.GetSymbol<VariableSymbol>(declaration.Id).Type.Size;
+        var sym = _model.GetSymbol<VariableSymbol>(declaration.Id);
+
+        return sym.Type.IsReferenceType ? 8 : sym.Type.Size;
     }
     private string GetSizeModifier(int size) => size switch { 1 => "byte", 2 => "word", 4 => "dword", 8 => "qword", _ => throw new NotSupportedException($"Incorrect size '{size}'") };
     private static string GetRegister(string name, int size)
@@ -1471,7 +1594,6 @@ public class CodeGenerator
 
 
     //Assembly instructions (USE ONLY THESE)
-
     private void Move(Operand dest, Operand src, bool signed = false)
     {
         if (IsFloatOperation(dest, src))
@@ -1655,6 +1777,12 @@ public class CodeGenerator
     }
     private void Mod(Operand dest, Operand src) => throw new NotImplementedException();
 
+
+    private void Xor(Operand dest, Operand src) => BinaryInstruction("xor", dest, src);
+
+    private void Inc(Operand op) => _writer.Append($"inc {(op is MemoryOperand ? GetSizeModifier(op.Size) : "")}{op.AsmName}");
+    private void Dec(Operand op) => _writer.Append($"dec {(op is MemoryOperand ? GetSizeModifier(op.Size) : "")}{op.AsmName}");
+
     private void ExtendInt(Operand dest, Operand src, bool signed)
     {
         Debug.Assert(src.Size is 1 or 2);
@@ -1712,24 +1840,6 @@ public class CodeGenerator
         _writer.Append($"pop {(operand with { Size = 8 }).AsmName}");
         _rspParity = (_rspParity - 8) & 0xF;
     }
-
-
-
-    private int AllocateTemp(int bytes)
-    {
-        _tempCursor += bytes;
-        var off = _localsSize + _tempCursor;
-        _tempMax = Math.Max(_tempMax, _tempCursor);
-        return off;
-    }
-    private int AllocateLargeParameter(int bytes)
-    {
-        _tempCursor += bytes;
-        var off = _localsSize + _tempCursor;
-        _tempMax = Math.Max(_tempMax, _tempCursor);
-        return off;
-    }
-
 
 
 

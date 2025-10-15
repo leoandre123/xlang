@@ -4,29 +4,41 @@ namespace xlang.Compiler.Tokenization;
 
 public enum TokenType
 {
-    //Literals
-    IntegerLiteral,
-    FloatLiteral,
+    /* LITERALS */
+    NumericLiteral,
     BooleanLiteral,
     StringLiteral,
 
 
-    //
-    Global,
+    /* MODIFIERS */
+    Public,
+    Module,
     Private,
 
-    Type,
+    Global,
     Extern,
-    Class,
-    Scope,
+    Inline,
+    Const,
+
+    Weak,
+    Strong,
+
+    /*  */
     Import,
+    Scope,
+    Alias,
+    Class,
+    Struct,
     Enum,
 
     //
     InterpolationStart,
     InterpolationEnd,
 
-    Comment,
+    
+    //
+    Make,
+
 
     //
     At,

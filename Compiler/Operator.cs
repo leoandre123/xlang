@@ -139,9 +139,13 @@ public class Operator(string symbol, OperatorType type, int precedence, Associat
         var prev = BinaryOperationMap;
         BinaryOperationMap = (left, right) =>
         {
-            if (left == Types.String || right == Types.String)
+            if (left.Name == "string")
             {
-                return Types.String;
+                return left;
+            }
+            if (right.Name == "string")
+            {
+                return left;
             }
 
             return prev?.Invoke(left, right);
@@ -194,8 +198,8 @@ public class Operator(string symbol, OperatorType type, int precedence, Associat
 
 
 
-        new Operator("==", Equal, 6).AddBinaryOperations([Types.Int, Types.Float, Types.Bool], Types.Bool),
-        new Operator("!=", NotEqual, 6).AddBinaryOperations([Types.Int, Types.Float, Types.Bool], Types.Bool),
+        new Operator("==", Equal, 6).AddBinaryOperations([.. Types.IntegerTypes, .. Types.FloatingPointTypes, Types.Bool], Types.Bool),
+        new Operator("!=", NotEqual, 6).AddBinaryOperations([.. Types.IntegerTypes, .. Types.FloatingPointTypes, Types.Bool], Types.Bool),
 
         new Operator("&", BitwiseAnd, 5).AddBinaryOperation(Types.Int),
 

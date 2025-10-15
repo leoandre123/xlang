@@ -9,6 +9,13 @@ public record SymbolId
     public int Id = NextId++;
 }
 
+public enum SymbolType
+{
+    All,
+    TypeDeclaring,
+    Callable,
+}
+
 public abstract record Symbol
 {
     public required string Name { get; init; }
@@ -26,7 +33,9 @@ public abstract record Symbol
         FieldSymbol => "Field",
         ParameterSymbol => "Parameter",
         VariableSymbol => "Variable",
-        _ => "Unknown type"
+        AliasSymbol => "Alias",
+
+        _ => $"Unknown type {GetType().Name}"
     };
 }
 
@@ -34,23 +43,29 @@ public record ScopeSymbol : Symbol
 {
     public required string FullyQualifiedName { get; init; }
 }
-
 public record SymbolWithType : Symbol
 {
     public required TypeSymbol Type { get; init; }
 }
+
 public record VariableSymbol : SymbolWithType
 {
+    public required int Count { get; init; }
     public required int Offset { get; init; }
 }
-
 public record ParameterSymbol : SymbolWithType
 {
     public required int Index { get; init; }
 }
+public record FieldSymbol : SymbolWithType
+{
+    public required EAccessType AccessType { get; init; }
+    public required int Offset { get; init; }
+}
+
+
 
 public record AliasSymbol : SymbolWithType;
-
 public abstract record CallableSymbol : SymbolWithType
 {
     public required string FullyQualifiedName { get; init; }
@@ -61,18 +76,15 @@ public record FunctionSymbol : CallableSymbol
 {
     public required EAccessType AccessType { get; init; }
 }
-
 public record MethodSymbol : FunctionSymbol;
-
 public record ConstructorSymbol : FunctionSymbol;
 
 
-public record FieldSymbol : SymbolWithType
-{
-    public required int Offset { get; init; }
-}
-
 public record ClassSymbol : SymbolWithType
 {
-   public required IReadOnlyList<SymbolId> Members { get; init; }
+    public required IReadOnlyList<SymbolId> Members { get; init; }
+}
+public record StructSymbol : SymbolWithType
+{
+    public required IReadOnlyList<SymbolId> Members { get; init; }
 }

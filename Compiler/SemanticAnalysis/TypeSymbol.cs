@@ -5,17 +5,17 @@ using xlang.Compiler.Structures;
 namespace xlang.Compiler.SemanticAnalysis;
 
 public record TypeSymbol
-    (string Name, int Size, int Alignment, string FullyQualifiedName)
+ (string Name, int Size, int Alignment, string FullyQualifiedName, bool IsReferenceType)
 {
-    public override string ToString() => Name;
     public string Name { get; set; } = Name;
     public int Size { get; set; } = Size;
     public int Alignment { get; set; } = Alignment;
     public string FullyQualifiedName { get; set; } = FullyQualifiedName;
 
+    public override string ToString() => Name;
     public virtual bool Equals(TypeSymbol? other)
     {
-        if(GetType() == other?.GetType())
+        if (GetType() == other?.GetType())
         {
             return other?.Size == Size && other?.Alignment == Alignment;
         }
@@ -23,7 +23,7 @@ public record TypeSymbol
     }
 }
 
-public record PrimitiveTypeSymbol(string Name, int Size, int Alignment, bool IsSigned, bool IsFloat) : TypeSymbol(Name, Size, Alignment, $"System.{Name}")
+public record PrimitiveTypeSymbol(string Name, int Size, int Alignment, bool IsSigned, bool IsFloat) : TypeSymbol(Name, Size, Alignment, $"System.{Name}", false)
 {
     public override string ToString() => Name;
     public bool IsSigned { get; set; } = IsSigned;
@@ -39,23 +39,23 @@ public record PrimitiveTypeSymbol(string Name, int Size, int Alignment, bool IsS
     }
 }
 
-public record UnresolvedTypeSymbol(string Name) : TypeSymbol(Name, -1, -1, "")
+public record UnresolvedTypeSymbol(string Name) : TypeSymbol(Name, -1, -1, "", false)
 {
     public override string ToString() => $"{Name} (Unresolved)";
 }
 
-public record ClassTypeSymbol(string Name, int Size, int Alignment, string FullyQualifiedName) : TypeSymbol(Name, Size, Alignment, FullyQualifiedName)
+public record ClassTypeSymbol(string Name, int ClassSize, int ClassAlignment, string FullyQualifiedName) : TypeSymbol(Name, 8, 8, FullyQualifiedName, true)
 {
     public ClassSymbol DeclaringSymbol { get; set; }
     public Dictionary<SymbolId, int> FieldOffset { get; init; } = [];
     public override string ToString() => Name;
 }
 
-public record PointerTypeSymbol(TypeSymbol Type) : TypeSymbol($"{Type.Name}*", 8, 8, $"{Type.FullyQualifiedName}*");
+public record PointerTypeSymbol(TypeSymbol Type) : TypeSymbol($"{Type.Name}*", 8, 8, $"{Type.FullyQualifiedName}*", false);
 
-public record ArrayTypeSymbol(TypeSymbol Type) : TypeSymbol($"{Type.Name}[]", Type.Size, Type.Alignment, $"{Type.Name}[]");
+public record ArrayTypeSymbol(TypeSymbol Type) : TypeSymbol($"{Type.Name}[]", Type.Size, Type.Alignment, $"{Type.Name}[]", false);
 
-public record ScopeTypeSymbol(string Name, string FullyQualifiedName) : TypeSymbol(Name, -1, -1, FullyQualifiedName);
+public record ScopeTypeSymbol(string Name, string FullyQualifiedName) : TypeSymbol(Name, -1, -1, FullyQualifiedName, false);
 
 
 public static class Types
@@ -75,9 +75,9 @@ public static class Types
 
     public static readonly PrimitiveTypeSymbol Bool = new("bool", 1, 1, false, false);
 
-    public static readonly TypeSymbol Void = new("void", 0, -1, "void");
+    public static readonly TypeSymbol Void = new("void", 0, -1, "void", false);
 
-    public static readonly TypeSymbol String = new("string", 16, 8, "System.string");
+    //public static readonly TypeSymbol String = new ClassTypeSymbol("string", 16, 8, "System.string");
 
     public static readonly List<TypeSymbol> BuiltIn = [
 
@@ -97,7 +97,7 @@ public static class Types
         Bool   ,
         Void   ,
 
-        String
+        //String
 
     ];
 
@@ -130,6 +130,22 @@ public static class Types
         if (FloatingPointTypes.Contains(from) && IntegerTypes.Contains(to)) return true;
         if (to is PointerTypeSymbol && IntegerTypes.Contains(from)) return true;
         if (to is PointerTypeSymbol && from is PointerTypeSymbol) return true;
+
+        return false;
+    }
+
+    public static bool IsImplicitConversionAllowed(TypeSymbol to, TypeSymbol from)
+    {
+        if(to is PointerTypeSymbol ptrTo && from is PointerTypeSymbol ptrFrom)
+        {
+            IsImplicitConversionAllowed(ptrTo.Type, ptrFrom.Type);
+        }
+        if (to is PrimitiveTypeSymbol primTo && from is PrimitiveTypeSymbol primFrom)
+        {
+            if (primTo.IsFloat != primFrom.IsFloat) return false;
+            if (primTo.Size < primFrom.Size) return false;
+            return true;
+        }
 
         return false;
     }

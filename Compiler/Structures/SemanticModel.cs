@@ -38,23 +38,12 @@ public class SemanticModel
     public Dictionary<SymbolId, Symbol> Symbols { get; } = new();
     public Dictionary<int, SymbolId> NodeToSymbolId { get; } = new();
 
-
-    //Defined Aliases
-    public List<ClassTypeSymbol> ClassTypeSymbols { get; } = new();
-    //public Dictionary<TypeSymbol, TypeSymbol> UserDefinedTypeSymbols { get; } = [];
-
-
-    //Meta data
-    //public Dictionary<ClassTypeSymbol, ClassMetaData> ClassData { get; } = new();
-    //public Dictionary<SymbolId, MethodMetaData> MethodData { get; } = new();
     public Dictionary<SymbolId, FunctionMetaData> FunctionData { get; } = new();
 
-
-
-
-    //public List<StringConstant> StringConstants { get; } = new();
     public Dictionary<int, int> LiteralConstantMap { get; } = new();
     public List<LiteralConstant> LiteralConstants { get; } = new();
+
+
 
     public SemanticModel()
     {

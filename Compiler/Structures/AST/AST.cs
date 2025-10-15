@@ -12,6 +12,7 @@ namespace xlang.Compiler.Structures.AST
 {
     public record Node(SourceSpan Span)
     {
+       // public required SourceSpan Span { get; init;}
         public int Id { get; } = GenerateId();
 
         private static int _currentId = 0;
@@ -21,21 +22,11 @@ namespace xlang.Compiler.Structures.AST
         }
     }
 
-
-
-    public record Error : Node
-    {
-        public Error(SourceSpan span) : base(span)
-        {
-            throw new Exception();
-        }
-    }
-
     //STATEMENTS
     public record Statement(SourceSpan Span) : Node(Span);
 
     public record VariableDeclaration(string Name, string Type, Expression? Initial, SourceSpan Span) : Statement(Span);
-    public record ArrayDeclaration(string Name, string Type, int Size, Expression? Initial, SourceSpan Span) : VariableDeclaration(Name, Type, Initial, Span);
+    public record ArrayDeclaration(string Name, string Type, Expression Size, Expression? Initial, SourceSpan Span) : VariableDeclaration(Name, Type, Initial, Span);
     public record IfStatement(Expression Expression, Statement Body, Statement? Else, SourceSpan Span) : Statement(Span);
     public record WhileStatement(Expression Expression, Statement Body, SourceSpan Span) : Statement(Span);
     public record ForStatement(Statement Initial, Expression Expression, Statement Increment, Statement Body, SourceSpan Span) : Statement(Span);
@@ -56,9 +47,10 @@ namespace xlang.Compiler.Structures.AST
     public record CallExpression(string Name, IReadOnlyList<Expression> Arguments, SourceSpan Span) : Expression(Span);
     public record IndexExpression(Expression Base, Expression Index, SourceSpan Span) : Expression(Span);
     public record StringInterpolationExpression(IReadOnlyList<Expression> Parts, SourceSpan Span) : Expression(Span);
-    public record MemberAccessExpression(Expression Base, string Member, SourceSpan Span) : Expression(Span);
+    public record MemberAccessExpression(Expression Base, string Member, int Count, SourceSpan Span) : Expression(Span);
     public record MemberCallExpression(Expression Base, string Member, IReadOnlyList<Expression> Arguments, SourceSpan Span) : Expression(Span);
     public record ArrayInitializerListExpression(IReadOnlyList<Expression> Elements, SourceSpan Span) : Expression(Span);
+    public record MakeExpression(Expression Call, SourceSpan Span) : Expression(Span);
 
     public record UnaryExpression(Operator Operator, Expression Operand, SourceSpan Span) : Expression(Span);
     public record BinaryExpression(Expression Left, Operator Operator, Expression Right, SourceSpan Span) : Expression(Span);
@@ -80,12 +72,13 @@ namespace xlang.Compiler.Structures.AST
         IReadOnlyList<FunctionParameter> Parameters,
         bool IsInstance,
         bool IsExtern,
+        bool IsUnsafe,
         Block? Body,
         SourceSpan Span) : Node(Span);
 
     //public record ClassMethodDeclaration(string Name, string ReturnType, IReadOnlyList<FunctionParameter> Parameters, Block Body, SourceSpan Span) : FunctionDeclaration(Name, ReturnType, EAccessType.Private, Parameters, Body, Span);
     //public record ClassConstructor(IReadOnlyList<FunctionParameter> Parameters, Block Body, SourceSpan Span) : ClassMember(Span);
-    public record ClassField(string Name, string Type, Expression? Initial, SourceSpan Span) : Node(Span);
+    public record ClassField(string Name, string Type, EAccessType AccessType, Expression? Initial, bool IsInline, SourceSpan Span) : Node(Span);
     public record ClassDeclaration(string Name, IReadOnlyList<Node> Members, SourceSpan Span) : Node(Span);
 
     public record ProgramDeclaration(IReadOnlyList<ProgramImport> Imports, ScopeBody Body, SourceSpan Span) : Node(Span);
@@ -93,6 +86,13 @@ namespace xlang.Compiler.Structures.AST
     public record ProgramImport(string Scope, SourceSpan Span) : Node(Span);
     public record FunctionAttribute(string Name, IReadOnlyList<Expression> Arguments, SourceSpan Span) : Node(Span);
 
+    public record GlobalVariableDeclaration(
+        string Name,
+        string Type,
+        EAccessType AccessType,
+        Expression? Initial,
+        bool IsConstant,
+        SourceSpan Span) : Node(Span);
 
     public record Module(SourceSpan Span) : Node(Span)
     {
