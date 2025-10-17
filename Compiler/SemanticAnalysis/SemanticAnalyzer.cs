@@ -932,9 +932,9 @@ public class SemanticAnalyzer
     {
         var t = expression switch
         {
-            IntegerLiteralExpression => new ExpressionInfo(Types.Int, ValueCategory.RValue),
+            IntegerLiteralExpression => new ExpressionInfo(Types.Int, ValueCategory.RValue, false),
             FloatLiteralExpression f => ResolveFloatLiteralType(f),
-            BooleanLiteralExpression => new ExpressionInfo(Types.Bool, ValueCategory.RValue),
+            BooleanLiteralExpression => new ExpressionInfo(Types.Bool, ValueCategory.RValue, false),
             StringLiteralExpression s => ResolveStringLiteralType(s),
             StringInterpolationExpression si => ResolveStringInterpolationType(si),
 
@@ -984,8 +984,8 @@ public class SemanticAnalyzer
         }
 
         return expression.Operator.Type == OperatorType.Dereference ?
-            new ExpressionInfo(returnType, ValueCategory.LValue) :
-            new ExpressionInfo(returnType, ValueCategory.RValue);
+            new ExpressionInfo(returnType, ValueCategory.LValue, operandInfo.ContainsCall) :
+            new ExpressionInfo(returnType, ValueCategory.RValue, operandInfo.ContainsCall);
     }
     private ExpressionInfo ResolveBinaryType(BinaryExpression expression)
     {
@@ -1048,7 +1048,7 @@ public class SemanticAnalyzer
             throw new SemanticException($"Operator '{expression.Operator.Symbol}' cannot be used on operands of type '{leftOperandInfo.Type}' and '{rightOperandInfo.Type}'", expression.Span, _currentModule.File);
         }
 
-        return new ExpressionInfo(returnType, ValueCategory.RValue);
+        return new ExpressionInfo(returnType, ValueCategory.RValue, leftOperandInfo.ContainsCall || rightOperandInfo.ContainsCall);
 
     }
     private ExpressionInfo ResolveVariable(VariableExpression expression)
@@ -1057,10 +1057,10 @@ public class SemanticAnalyzer
         var symbol = LookupVariable(expression.Name);
 
         if (symbol is ScopeSymbol ss)
-            return new ExpressionInfo(new ScopeTypeSymbol(ss.Name, ss.FullyQualifiedName), ValueCategory.RValue);
+            return new ExpressionInfo(new ScopeTypeSymbol(ss.Name, ss.FullyQualifiedName), ValueCategory.RValue, false);
 
         if (symbol is ClassSymbol cs)
-            return new ExpressionInfo(new ScopeTypeSymbol(cs.Name, cs.Type.FullyQualifiedName), ValueCategory.RValue);
+            return new ExpressionInfo(new ScopeTypeSymbol(cs.Name, cs.Type.FullyQualifiedName), ValueCategory.RValue, false);
 
         if (symbol == null)
             throw new SemanticException($"Variable with name '{expression.Name}' has not been declared.", expression.Span, _currentModule.File);
@@ -1072,7 +1072,7 @@ public class SemanticAnalyzer
 
         UseSymbol(symbol, expression.Id);
 
-        return new ExpressionInfo((symbol as SymbolWithType)!.Type, ValueCategory.LValue);
+        return new ExpressionInfo((symbol as SymbolWithType)!.Type, ValueCategory.LValue, false);
 
     }
     private ExpressionInfo ResolveCallType(CallExpression call)
@@ -1096,7 +1096,7 @@ public class SemanticAnalyzer
         UseSymbol(symbol, call.Id);
         RecordRead(symbol.Id);
 
-        return new ExpressionInfo(symbol.Type, ValueCategory.RValue);
+        return new ExpressionInfo(symbol.Type, ValueCategory.RValue, true);
     }
 
     private ExpressionInfo ResolveStringLiteralType(StringLiteralExpression stringLiteral)
@@ -1112,7 +1112,9 @@ public class SemanticAnalyzer
         var stringType = LookupClass("string")?.Type ?? throw new Exception("string error");
 
         _model.LiteralConstantMap[stringLiteral.Id] = id;
-        return new ExpressionInfo(stringType, ValueCategory.RValue);
+
+        //TODO: Maybe contains call for allocation??
+        return new ExpressionInfo(stringType, ValueCategory.RValue, false);
     }
     private ExpressionInfo ResolveFloatLiteralType(FloatLiteralExpression floatLiteral)
     {
@@ -1124,7 +1126,7 @@ public class SemanticAnalyzer
         }
 
         _model.LiteralConstantMap[floatLiteral.Id] = id;
-        return new ExpressionInfo(Types.Float, ValueCategory.RValue);
+        return new ExpressionInfo(Types.Float, ValueCategory.RValue, false);
     }
     private ExpressionInfo ResolveIndexType(IndexExpression index)
     {
@@ -1163,14 +1165,14 @@ public class SemanticAnalyzer
         }
 
 
-        return new ExpressionInfo(baseType, ValueCategory.LValue);
+        return new ExpressionInfo(baseType, ValueCategory.LValue, baseInfo.ContainsCall || indInfo.ContainsCall);
     }
     private ExpressionInfo ResolveAccessType(MemberAccessExpression access)
     {
-       //if (access.Count > 1)
-       //{
-       //    ResolveExpressionType(access.Base);
-       //}
+        //if (access.Count > 1)
+        //{
+        //    ResolveExpressionType(access.Base);
+        //}
 
         //var accessBase = GetExpressionBase(access.Base);
         var baseInfo = ResolveExpressionType(access.Base);
@@ -1194,7 +1196,7 @@ public class SemanticAnalyzer
                         throw new SemanticException($"'{access.Member}' of '{classTypeSymbol.FullyQualifiedName}' is inaccessible", access.Span, _currentModule.File);
                     GetSymbolAccessType(memberSymbol);
                     UseSymbol(memberSymbol, access.Id);
-                    return new ExpressionInfo(memberSymbol.Type, memberSymbol is FieldSymbol ? ValueCategory.LValue : ValueCategory.RValue);
+                    return new ExpressionInfo(memberSymbol.Type, memberSymbol is FieldSymbol ? ValueCategory.LValue : ValueCategory.RValue, baseInfo.ContainsCall);
                 }
             }
         }
@@ -1202,7 +1204,7 @@ public class SemanticAnalyzer
         {
             switch (access.Member)
             {
-                case "Length": return new ExpressionInfo(Types.Int, ValueCategory.RValue);
+                case "Length": return new ExpressionInfo(Types.Int, ValueCategory.RValue, baseInfo.ContainsCall);
             };
         }
         throw new SemanticException($"Type '{baseInfo.Type}' does not contain member '{access.Member}'", access.Span, _currentModule.File);
@@ -1248,28 +1250,31 @@ public class SemanticAnalyzer
         UseSymbol(callable, call.Id);
         RecordRead(callable.Id);
 
-        return new ExpressionInfo(callable.Type, ValueCategory.RValue);
+        return new ExpressionInfo(callable.Type, ValueCategory.RValue, true);
     }
     private ExpressionInfo ResolveStringInterpolationType(StringInterpolationExpression interpolation)
     {
+        var containsCall = false;
         foreach (var part in interpolation.Parts)
         {
-            ResolveExpressionType(part);
+            containsCall = containsCall || ResolveExpressionType(part).ContainsCall;
         }
 
         var stringType = LookupClass("string")?.Type ?? throw new Exception("string error");
-        return new ExpressionInfo(stringType, ValueCategory.RValue);
+        return new ExpressionInfo(stringType, ValueCategory.RValue, containsCall);
     }
     private ExpressionInfo ResolveArrayInitializerList(ArrayInitializerListExpression initializerList)
     {
         var type = Types.Void;
+        var containsCall = false;
         foreach (var part in initializerList.Elements)
         {
             var info = ResolveExpressionType(part);
+            containsCall = containsCall || info.ContainsCall;
             type = info.Type;
         }
 
-        return new ExpressionInfo(new ArrayTypeSymbol(type), ValueCategory.RValue);
+        return new ExpressionInfo(new ArrayTypeSymbol(type), ValueCategory.RValue, containsCall);
     }
     private ExpressionInfo ResolveMakeExpression(MakeExpression makeExpression)
     {
@@ -1316,8 +1321,8 @@ public class SemanticAnalyzer
         UseSymbol(classSymbol, makeExpression.Id);
 
         //TODO: Är väl tekniskt sett en LValue men men
-        _model.ExpressionData[makeExpression.Call.Id] = new ExpressionInfo(classSymbol.Type, ValueCategory.RValue);
-        return new ExpressionInfo(classSymbol.Type, ValueCategory.RValue);
+        _model.ExpressionData[makeExpression.Call.Id] = new ExpressionInfo(classSymbol.Type, ValueCategory.RValue, true);
+        return new ExpressionInfo(classSymbol.Type, ValueCategory.RValue, true);
     }
 
 

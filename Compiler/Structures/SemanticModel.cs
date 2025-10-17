@@ -16,7 +16,7 @@ public record FunctionMetaData
 }
 //public record MethodMetaData(int Size, string FullName);
 public enum ValueCategory { RValue, LValue /*ModifiableLValue*/}
-public record ExpressionInfo(TypeSymbol Type, ValueCategory Category);
+public record ExpressionInfo(TypeSymbol Type, ValueCategory Category, bool ContainsCall);
 public record ConcatenationList(List<Expression> List);
 
 

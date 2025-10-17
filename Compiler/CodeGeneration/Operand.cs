@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Drawing;
 using xlang.Compiler.Utils;
 
 namespace xlang.Compiler.CodeGeneration;
@@ -91,6 +92,13 @@ public record MemoryOperand : Operand
 
     }
 
+    public static MemoryOperand FromRegister(RegisterOperand baseReg, int size)
+    {
+        return new MemoryOperand(size)
+        {
+            BaseRegister = baseReg.Name,
+        };
+    }
     public static MemoryOperand FromIndex(RegisterOperand baseReg, RegisterOperand indexReg, int scale, int displacement, int size)
     {
         return new MemoryOperand(size)
@@ -99,6 +107,14 @@ public record MemoryOperand : Operand
             IndexRegister = indexReg.Name,
             Scale = scale,
             Offset = displacement
+        };
+    }
+    public static MemoryOperand FromOffset(RegisterOperand baseReg, int offset, int size)
+    {
+        return new MemoryOperand(size)
+        {
+            BaseRegister = baseReg.AsmName,
+            Offset = offset,
         };
     }
     public static MemoryOperand FromOffset(string reg, int offset, int size)
@@ -132,10 +148,10 @@ public record MemoryOperand : Operand
         if (IsRel) return $"[rel {Label}]";
 
         var scalePart = Scale != 1 ? $"*{Scale}" : "";
-        var indexPart = IndexRegister != null ? $" {IndexRegister}{scalePart}" : "";
-        var offsetPart = Offset != 0 ? $" {(Offset > 0 ? $"+{Offset}" : Offset)}" : "";
+        var indexPart = IndexRegister != null ? $"+{IndexRegister}{scalePart}" : "";
+        var offsetPart = Offset != 0 ? $"{(Offset > 0 ? $"+{Offset}" : Offset)}" : "";
 
-        return $"{BaseRegister}{indexPart}{offsetPart}";
+        return $"[{BaseRegister}{indexPart}{offsetPart}]";
     }
 
     public MemoryOperand WithOffset(int offset, int newSize)

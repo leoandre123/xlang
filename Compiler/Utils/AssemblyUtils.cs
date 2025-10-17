@@ -126,7 +126,7 @@ public static class AssemblyUtils
     //LOCATIONS
     public static Operand GetParameterLocation(int index, bool isSpilled, int size = 8)
     {
-        if (isSpilled)
+        if (isSpilled || index >= 4)
             return new MemoryOperand($"[rbp + {16 + index * 8}]", size);
         return GetParameterRegister(index);
     }
