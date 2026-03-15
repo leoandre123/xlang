@@ -218,8 +218,16 @@ public class Operator(string symbol, OperatorType type, int precedence, Associat
         new Operator("*=", MulAssign, 0, isAssigning: true).AddBinaryOperations([..Types.IntegerTypes, ..Types.FloatingPointTypes]),
         new Operator("/=", DivAssign, 0, isAssigning: true).AddBinaryOperations([..Types.IntegerTypes, ..Types.FloatingPointTypes]),
         new Operator("%=", ModAssign, 0, isAssigning: true).AddBinaryOperations([..Types.IntegerTypes, ..Types.FloatingPointTypes]),
-    ];                                 
+    ];
 
+    public static readonly OperatorType[] CompoundOperatorTypes =
+    [
+        AddAssign,
+        SubAssign,
+        MulAssign,
+        DivAssign,
+        ModAssign,
+    ];
 
     public static Operator? GetOperator(string symbol, bool unary = false)
     {

@@ -1,20 +1,23 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace xlang.Compiler.CodeGeneration;
+﻿namespace xlang.Compiler.CodeGeneration;
 
 public record Register
 {
     public string Name { get; init; }
     public bool CalleeSaved { get; init; }
+    public bool IsXmm { get; init; }
+    public bool IsGpr => !IsXmm;
 
     private Register(string name, bool calleeSaved)
     {
         Name = name;
         CalleeSaved = calleeSaved;
+    }
+
+    private Register(string name, bool calleeSaved, bool isXmm)
+    {
+        Name = name;
+        CalleeSaved = calleeSaved;
+        IsXmm = isXmm;
     }
 
 
@@ -30,4 +33,14 @@ public record Register
     public static readonly Register R13 = new("r13", true);
     public static readonly Register R14 = new("r14", true);
     public static readonly Register R15 = new("r15", true);
+
+    public static readonly Register Rbp = new("rbp", true);
+    public static readonly Register Rsp = new("rsp", true);
+
+    public static readonly Register Xmm0 = new("xmm0", false, true);
+    public static readonly Register Xmm1 = new("xmm1", false, true);
+    public static readonly Register Xmm2 = new("xmm2", false, true);
+    public static readonly Register Xmm3 = new("xmm3", false, true);
+    public static readonly Register Xmm4 = new("xmm4", false, true);
+    public static readonly Register Xmm5 = new("xmm5", false, true);
 }

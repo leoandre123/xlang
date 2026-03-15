@@ -1101,6 +1101,7 @@ public class SemanticAnalyzer
 
     private ExpressionInfo ResolveStringLiteralType(StringLiteralExpression stringLiteral)
     {
+        _usesCalls = true;
         var id = _model.LiteralConstants.FindIndex(x => x is StringConstant s && s.Text == stringLiteral.Value);
         if (id == -1)
         {

@@ -1,13 +1,14 @@
-﻿using xlang.Compiler.CodeGeneration;
+﻿using System.Drawing;
+using xlang.Compiler.CodeGeneration;
 
 namespace xlang.Compiler.Utils;
 
 public static class AssemblyUtils
 {
     public static string GetSizeModifier(int size) => size switch { 1 => "byte", 2 => "word", 4 => "dword", 8 => "qword", _ => throw new NotSupportedException($"Incorrect size '{size}'") };
-    public static string GetRegister(string name, int size)
+    public static string GetRegisterName(Register reg, int size)
     {
-        return (name, size) switch
+        return (reg.Name, size) switch
         {
             ("rax", 8) => "rax",
             ("rax", 4) => "eax",
@@ -80,11 +81,11 @@ public static class AssemblyUtils
                 "xmm2" or
                 "xmm3" or
                 "xmm4" or
-                "xmm5", _) => name,
+                "xmm5", _) => reg.Name,
 
 
 
-            (_, _) => throw new NotSupportedException($"There is no register '{name}' with size '{size}'")
+            (_, _) => throw new NotSupportedException($"There is no register '{reg.Name}' with size '{size}'")
         };
     }
     public static bool IsRegister(string name)
@@ -111,7 +112,18 @@ public static class AssemblyUtils
     }
     public static bool FitsInRegister(int size) => size is 1 or 2 or 4 or 8;
     public static string GetStringConstLabel(int stringConstId) => $"str_{stringConstId}_";
-    public static RegisterOperand GetParameterRegister(int index)
+    public static Register GetParameterRegister(int index)
+    {
+        return index switch
+        {
+            0 => Register.Rcx,
+            1 => Register.Rdx,
+            2 => Register.R8,
+            3 => Register.R9,
+            _ => throw new NotSupportedException("Only the first 4 arguments are stored in registers")
+        };
+    }
+    public static RegisterOperand GetParameterRegisterOperand(int index)
     {
         return index switch
         {
@@ -122,12 +134,16 @@ public static class AssemblyUtils
             _ => throw new NotSupportedException("Only the first 4 arguments are stored in registers")
         };
     }
+    public static MemoryOperand GetParameterHome(int index, int size = 8)
+    {
+        return MemoryOperand.FromDisplacement(Register.Rbp, 16 + index * 8, size);
+    }
 
     //LOCATIONS
     public static Operand GetParameterLocation(int index, bool isSpilled, int size = 8)
     {
         if (isSpilled || index >= 4)
-            return new MemoryOperand($"[rbp + {16 + index * 8}]", size);
-        return GetParameterRegister(index);
+            return GetParameterHome(index, size);
+        return GetParameterRegisterOperand(index);
     }
 }

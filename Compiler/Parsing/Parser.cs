@@ -76,13 +76,26 @@ public class Parser
     {
         var lit = Expect(TokenType.NumericLiteral);
 
-        if (int.TryParse(lit.Value, out var i))
+        if (lit.Value!.All(char.IsDigit))
         {
-            return new IntegerLiteralExpression(i, lit.Span);
+            if (int.TryParse(lit.Value, out var i))
+            {
+                return new IntegerLiteralExpression(i, lit.Span);
+            }
         }
-        if (float.TryParse(lit.Value!.TrimEnd('f'), CultureInfo.InvariantCulture, out var f))
+        else if(lit.Value!.EndsWith('f'))
         {
-            return new FloatLiteralExpression(f, lit.Span);
+            if (float.TryParse(lit.Value!.TrimEnd('f'), CultureInfo.InvariantCulture, out var f))
+            {
+                return new FloatLiteralExpression(f, double.NaN, false, lit.Span);
+            }
+        }
+        else
+        {
+            if (double.TryParse(lit.Value, CultureInfo.InvariantCulture, out var d))
+            {
+                return new FloatLiteralExpression(float.NaN, d, true, lit.Span);
+            }
         }
 
         throw new ParsingException($"Could not parse literal '{lit.Value}'", lit.Span, _file);

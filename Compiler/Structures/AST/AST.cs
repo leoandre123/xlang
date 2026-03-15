@@ -40,7 +40,7 @@ namespace xlang.Compiler.Structures.AST
     public record Expression(SourceSpan Span) : Statement(Span);
 
     public record IntegerLiteralExpression(int Value, SourceSpan Span) : Expression(Span);
-    public record FloatLiteralExpression(float Value, SourceSpan Span) : Expression(Span);
+    public record FloatLiteralExpression(float Value, double DoubleValue, bool IsDouble, SourceSpan Span) : Expression(Span);
     public record BooleanLiteralExpression(bool Value, SourceSpan Span) : Expression(Span);
     public record StringLiteralExpression(string Value, SourceSpan Span) : Expression(Span);
     public record VariableExpression(string Name, SourceSpan Span) : Expression(Span);
